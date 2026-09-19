@@ -1,81 +1,77 @@
 # 14 DoF 로봇 핸드 4대 팀별 시스템 인터페이스 협약서 (SYSTEM_INTERFACE_CONTRACT)
+## [개정판: 멀티모달 임베딩 직결 및 정상화된 계층형 데이터 통로]
 
-본 문서는 **1팀(비전+VLA)**, **2팀(기구 제작)**, **3팀(저수준 제어+통신 주축)**, **4팀(촉각 인식)** 간의 원활한 정보 공유와 무결점 통합을 위해 제정된 **공식 시스템 인터페이스 계약(Interface Contract) 및 구속 조건 명세서**입니다.
-
-모든 팀은 하위 시스템 개발 시 본 문서에 정의된 **인터페이스 ID(`[IF-XX]`), 포트/토픽 명칭, 최소/최대 발행 주기, 데이터 구조, 안전 제약 구속 조건**을 반드시 준수해야 합니다.
-
----
-
-## 1. 4대 팀 구조 및 역할 정의 (Team Structure)
-
-```
-[1팀] 손 / 물체 비전 + VLA 상위 지능
-  ├─ 1-A: 손목 6D 포즈 & 5지 3D 키포인트 추적
-  ├─ 1-B: 타깃 물체 6D 바운딩 박스 인식
-  └─ 1-C: VLA(Vision-Language-Action) 상위 작업 계획 및 목표 웨이포인트 추론
-
-[2팀] 기구 제작 및 모델링 (Mechanical Design)
-  ├─ 2-A: 14 DoF 3D CAD 설계, STL 메시 추출, 3D 프린팅 / 가공
-  ├─ 2-B: 단일 에셋(assets/) 관리 및 URDF / MuJoCo XML 모델 갱신
-  └─ 2-C: 모터 배치, 텐던 라우팅(0.8 결합비 풀리 설계), 하드웨어 배선(CAN/UART)
-
-[3팀] 저수준 제어 + 통신 주축 (Low-Level Control & Comm Core) - 주축 팀
-  ├─ 3-A (사용자 전담): 통신 코어 IPC 허브, 5채널 소켓 멀티플렉서, 안전 워치독, 하드웨어/시뮬 브릿지
-  └─ 3-B (동료 팀원 전담): 100Hz 파이썬 순수 제어기, 14 DoF 기구학(FK/IK), 모터 토크 생성
-
-[4팀] 촉각 인식 (Tactile Perception)
-  ├─ 4-A: 손끝 5지 텍셀(Taxel) 어레이 원시 데이터 수집
-  ├─ 4-B: 슬립(Slip) 감지 및 3축 접촉력(Fn, Ft) 추정
-  └─ 4-C: 실시간 파지 안정도(Grasp Stability) 평가
-```
+본 문서는 **1팀(비전+VLA)**, **2팀(기구 제작)**, **3팀(저수준 제어+통신 주축)**, **4팀(촉각 인식)** 간의 올바른 신호 흐름과 **임베딩(Embedding) / 물리 제어 통로 분리**를 반영한 **공식 시스템 인터페이스 계약서**입니다.
 
 ---
 
-## 2. 인터페이스 매칭 전체 다이어그램 (Interface Flow Diagram)
+## 1. 데이터 통로(Pathway) 정상화 및 임베딩 처리 원칙
 
-다이어그램의 각 연결선에 부여된 **`[IF-01]` ~ `[IF-07]` 식별 번호**는 제3절의 **구속 조건 명세표**와 1:1로 정확하게 일치합니다.
+### A. 기존 통로의 오류와 비정상 구조 청산
+1. **1팀 내부 비전 데이터의 기형적 우회로 제거**:
+   - 1팀은 **"비전 + VLA 상위 지능"**을 단일 팀에서 전담하므로, 카메라 RGB-D 영상과 비전 특징값은 1팀 내부에서 VLA 모델로 **직접(Direct) 인메모리/임베딩 주입**됩니다. (3팀 통신 코어로 내려갔다가 다시 올라오는 왜곡된 우회 통로 완전 폐기).
+2. **3팀(통신 코어)의 병목 현상 해소**:
+   - 3팀은 **"모터 구동 및 100Hz 저수준 제어"**의 주축이지, 고용량 멀티모달 비전 임베딩을 중계하는 병목 라우터가 아닙니다.
+   - 따라서 3팀은 오직 **[VLA 목표 지령 수신 $\rightarrow$ 100Hz 기구학/토크 제어 $\rightarrow$ 모터 구동]**과 **[관절 상태(q, dq) 피드백 송출]**에만 집중합니다.
+3. **촉각(4팀) 통로의 이원화 (상위 지능 임베딩 vs 저수준 반사 제어)**:
+   - **통로 ① (VLA 임베딩)**: 4팀 촉각 특징 임베딩($z_{\text{tactile}}$) $\rightarrow$ 1팀 VLA 모델 직결 (장기적 파지 판단).
+   - **통로 ② (고속 반사 제어)**: 4팀 슬립(Slip) 감지 플래그 $\rightarrow$ 3팀 제어기 직결 (20ms 이내 물체 낙하 방지 즉각 보상 토크 인가).
+
+---
+
+## 2. 정상화된 4대 팀 데이터 플로우 다이어그램 (Corrected Flowchart)
 
 ```mermaid
 flowchart TB
-    subgraph TEAM1["[1팀] 손/물체 비전 + VLA 상위 지능"]
+    subgraph TEAM1["[1팀] 손/물체 비전 + VLA 상위 지능 계층"]
         direction TB
-        T1_VIS["비전 인식 모듈<br/>(카메라 / 깊이 센서)"]
-        T1_VLA["VLA 상위 정책 코어<br/>(OpenVLA / Octo)"]
+        CAM["카메라 센서 (RGB-D / Optical)"]
+        VIS_ENC["비전 인코더 (ViT / ResNet)<br/>• 손목 6D 포즈 & 키포인트<br/>• 비전 패치 임베딩 (z_vis)"]
+        VLA_CORE["VLA 파운데이션 정책 (OpenVLA / Octo)<br/>멀티모달 토큰 융합: [z_vis + z_tac + z_prop + Text]"]
+
+        CAM --> VIS_ENC --> VLA_CORE
     end
 
-    subgraph TEAM2["[2팀] 기구 제작 (CAD / Hardware)"]
+    subgraph TEAM4["[4팀] 촉각 인식 계층 (Tactile)"]
         direction TB
-        T2_CAD["단일 에셋 (assets/)<br/>• meshes/*.STL (44개)<br/>• models/*.xml"]
-        T2_ACT["10개 액추에이터 구동계<br/>(모터 버스 & 텐던 메커니즘)"]
+        TAXEL_HW["손끝 5지 텍셀 센서 어레이"]
+        TAC_ENC["촉각 임베딩 인코더 & 슬립 감지기"]
+        
+        TAXEL_HW --> TAC_ENC
     end
 
     subgraph TEAM3["[3팀] 저수준 제어 + 통신 주축 (주축 팀)"]
         direction TB
-        subgraph T3_COMM["[3-A] 통신 코어 (사용자 전담 허브)"]
-            ROUTER["통신 코어 IPC 라우터 (socket_server.py)<br/>• Non-blocking 소켓 멀티플렉서<br/>• 100ms 안전 워치독<br/>• ±2.5 Nm 토크 클램퍼<br/>• joint_mapping.yaml 동적 파서"]
-        end
         subgraph T3_CTRL["[3-B] 파이썬 제어 코어 (팀원 전담)"]
-            CTRL["14 DoF 기구학 제어기<br/>(Pure Python 100Hz 루프)"]
+            KIN_CTRL["14 DoF 기구학 제어기 (100Hz 루프)<br/>• VLA 목표 궤적 추종<br/>• 촉각 슬립 보상 반사 루프<br/>• 모터 토크 생성"]
         end
+        subgraph T3_COMM["[3-A] 통신 코어 (사용자 전담)"]
+            COMM_HUB["통신 코어 (socket_server.py)<br/>• 100ms 안전 워치독 / 토크 클램퍼<br/>• joint_mapping.yaml 동적 바인딩<br/>• 하드웨어 버스 드라이버 (CAN 1Mbps)"]
+        end
+        KIN_CTRL <--> COMM_HUB
     end
 
-    subgraph TEAM4["[4팀] 촉각 인식 (Tactile)"]
+    subgraph TEAM2["[2팀] 기구 제작 계층 (Mechanical / Hardware)"]
         direction TB
-        T4_HUB["촉각 인식 모델 & 필터<br/>• 슬립 감지<br/>• 접촉력 / 안정도 판정"]
+        ASSETS["단일 에셋 (assets/)<br/>• meshes/*.STL (44개)<br/>• models/*.xml"]
+        MOTOR_HW["10개 모터 구동계 & 텐던 메커니즘<br/>(DIP=0.8*PIP 결합 풀리)"]
     end
 
-    %% Interface Connections with Matching IDs
-    T2_CAD == "[IF-01] CAD 모델 에셋 주입" ==> ROUTER
-    T2_ACT <-- "[IF-02] 하드웨어 버스 (CAN/UART 1Mbps)" --> ROUTER
+    %% 정상화된 인터페이스 연결선
+    ASSETS == "[IF-01] CAD 모델 에셋 주입" ==> COMM_HUB
+    COMM_HUB <-- "[IF-02] 모터 버스 (CAN 1Mbps)" --> MOTOR_HW
 
-    ROUTER == "[IF-03] 100Hz 관절 텔레메트리 (UDP 5555)" ==> CTRL
-    CTRL == "[IF-04] 100Hz 모터 토크 지령 (UDP 5556)" ==> ROUTER
+    %% 3팀 내부 제어 루프
+    COMM_HUB == "[IF-03] 100Hz 관절 텔레메트리 (q, dq)" ==> KIN_CTRL
+    KIN_CTRL == "[IF-04] 100Hz 모터 토크 지령 (torques)" ==> COMM_HUB
 
-    ROUTER <-- "[IF-05] 100~200Hz 촉각 허브 (UDP 5557)" --> T4_HUB
+    %% 촉각 이원화 통로
+    TAC_ENC == "[IF-05A] 촉각 특징 임베딩 (z_tac)" ==> VLA_CORE
+    TAC_ENC == "[IF-05B] 고속 슬립/접촉 반사 신호 (20ms)" ==> KIN_CTRL
 
-    T1_VIS == "[IF-06] 30~60Hz 비전 포즈 스트림 (UDP 5558)" ==> ROUTER
-
-    ROUTER <-- "[IF-07] 10~30Hz VLA 관측 & 액션 (UDP 5559)" --> T1_VLA
+    %% VLA 연동 통로
+    COMM_HUB -. "[IF-07A] 관절 프로프리오셉션 (q, dq)" .-> VLA_CORE
+    VLA_CORE == "[IF-07B] 상위 액션 목표 (웨이포인트/파지시너지)" ==> KIN_CTRL
 
     classDef t1 fill:#fce7f3,stroke:#db2777,stroke-width:2px;
     classDef t2 fill:#f1f5f9,stroke:#64748b,stroke-width:2px;
@@ -90,44 +86,26 @@ flowchart TB
 
 ---
 
-## 3. 인터페이스 구속 조건 총괄 명세표 (Interface Requirements Table)
+## 3. 인터페이스 구속 조건 명세표 (Revised Contract Table)
 
-다이어그램의 식별 번호(`[IF-XX]`)와 일치하는 세부 구속 조건입니다. 모든 팀은 이 표의 **주기, 보드레이트, 안전 제약 조건**을 필수 준수해야 합니다.
-
-| ID | 송신 $\rightarrow$ 수신 팀 | 통신 방식 (소켓 포트 / ROS 토픽) | 발행 주기 (최소 ~ 최대) | 보드레이트 / 대역폭 | 데이터 구조 및 주요 필드 | 필수 구속 조건 및 불변식 (Constraints & Invariants) |
-| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
-| **`[IF-01]`** | 2팀 $\rightarrow$ 3팀 | 파일 시스템 단일 에셋 주입 | 변경 시 즉시 | N/A (디스크 I/O) | `assets/meshes/*.STL`<br>`assets/models/*.xml` | • STL은 반드시 `assets/meshes/`에만 단일 보관할 것.<br>• XML 컴파일러 태그는 `<compiler meshdir="../meshes"/>`로 고정할 것.<br>• 관절 명칭 변경 시 `joint_mapping.yaml`에 반영할 것. |
-| **`[IF-02]`** | 3팀 $\leftrightarrow$ 2팀 | CAN Bus / RS-485 Serial UART | 100 Hz $\pm 1\text{ms}$ (10ms) | **1,000,000 bps** (1 Mbps 고정) | 10개 모터 패킷<br>(ID, Pos, Vel, Current) | • 모터 ID는 $1 \sim 10$번으로 고정.<br>• 최대 허용 전류 초과 방지 드라이버단 하드웨어 퓨즈 필수.<br>• 1회 통신 프레임 지연 < 1.5ms 유지. |
-| **`[IF-03]`** | 3-A $\rightarrow$ 3-B | UDP Socket (`127.0.0.1:5555`)<br>*(ROS: `/gripper/telemetry`)* | **100 Hz 고정** (10 ms) | 로컬 루프백<br>(지연 < 0.1ms) | JSON 문자열<br>`q[14]`, `dq[14]`, `actuator_pos[10]`, `actuator_torque[10]` | • 14개 관절 인덱스는 `joint_mapping.yaml` 순서($0\sim13$) 엄수.<br>• 단위: 위치 $\text{rad}$, 속도 $\text{rad/s}$, 토크 $\text{Nm}$.<br>• 제어팀은 논블로킹 최신 1프레임만 수신할 것. |
-| **`[IF-04]`** | 3-B $\rightarrow$ 3-A | UDP Socket (`127.0.0.1:5556`)<br>*(ROS: `/gripper/torque_command`)* | 50 Hz ~ **100 Hz** (10~20ms) | 로컬 루프백<br>(지연 < 0.1ms) | JSON 문자열<br>`mode: "torque"`,<br>`torques[10]` | • **안전 워치독 구속 조건**: 100ms 초과 미수신 시 3-A팀이 전 모터 출력 $0.0\text{ Nm}$ 강제 차단.<br>• **토크 클램핑**: 엄지 $\pm 1.8\text{ Nm}$, 손가락 $\pm 2.5\text{ Nm}$ 초과분 강제 절삭. |
-| **`[IF-05]`** | 3-A $\leftrightarrow$ 4팀 | UDP Socket (`127.0.0.1:5557`)<br>*(ROS: `/tactile/taxel_stream`)* | **100 Hz ~ 200 Hz** (5~10ms) | 약 250 KB/s 대역폭 | **TX**: `taxels` (5지 $\times$ 16값)<br>**RX**: `slip_detected[5]`, `normal_forces[5]` | • 4팀의 슬립/접촉 감지 알고리즘 연산 지연시간은 20ms 이내일 것.<br>• 센서 노이즈 필터링(LPF 50Hz)은 4팀 내부에서 완료하여 전달할 것. |
-| **`[IF-06]`** | 1팀 $\rightarrow$ 3-A | UDP Socket (`127.0.0.1:5558`)<br>*(ROS: `/perception/wrist_pose`)* | **30 Hz ~ 60 Hz** (16~33ms) | 약 50 KB/s 대역폭 | JSON 문자열<br>`palm_pose`, `fingertip_keypoints_3d`, `target_object` | • 좌표계 표준: **ROS REP-103 표준 준수** (X 전방, Y 좌측, Z 상향, 단위: 미터).<br>• 카메라 광학 좌표계일 경우 광학계 변환 행렬($T_{c2b}$) 필수 표기.<br>• 타깃 신뢰도(`confidence`) 0.7 미만 시 플래그 0 전송. |
-| **`[IF-07]`** | 3-A $\leftrightarrow$ 1팀 | UDP Socket (`127.0.0.1:5559`)<br>*(ROS: `/vla/action_stream`)* | **10 Hz ~ 30 Hz** (33~100ms) | 약 20 KB/s 대역폭 | **TX**: 관측치 번들<br>**RX**: `target_fingertip_waypoints`, `synergy_mode` | • VLA 액션은 급격한 Step 지령 금지 (최대 속도 $\le 0.15\text{ m/s}$ 스무딩 필수).<br>• 파지 모드: `"pinch"`, `"power"`, `"tripod"` 표준 문자열 사용.<br>• 최대 접촉력 상한선(`max_contact_force_limit_N`) 필드 필수 포함. |
+| ID | 송신 $\rightarrow$ 수신 팀 | 통신 채널 / 인터페이스 | 주기 / 타이밍 | 데이터 포맷 및 임베딩 규격 | 필수 구속 조건 및 안전 불변식 |
+| :---: | :---: | :---: | :---: | :---: | :--- |
+| **`[IF-01]`** | 2팀 $\rightarrow$ 3팀 | 파일 시스템 단일 에셋 | 변경 시 즉시 | `assets/meshes/*.STL`<br>`assets/models/*.xml` | • STL은 `assets/meshes/` 단일 보관.<br>• XML 컴파일러 태그 `<compiler meshdir="../meshes"/>` 고정. |
+| **`[IF-02]`** | 3팀 $\leftrightarrow$ 2팀 | CAN Bus / RS-485 Serial | **100 Hz** (10 ms) | **1,000,000 bps (1 Mbps)** | • 모터 ID $1 \sim 10$번 고정.<br>• 프레임 지연 < 1.5ms. 드라이버단 과전류 퓨즈 필수. |
+| **`[IF-03]`** | 3-A $\rightarrow$ 3-B | UDP Socket (`:5555`) | **100 Hz 고정** (10 ms) | JSON: `q[14]`, `dq[14]`, `torque[10]` | • 14 관절 인덱스 순서(0~13) 엄수.<br>• 단위: 위치 `rad`, 속도 `rad/s`, 토크 `Nm`.<br>• 논블로킹 최신 1프레임 취득. |
+| **`[IF-04]`** | 3-B $\rightarrow$ 3-A | UDP Socket (`:5556`) | 50 ~ **100 Hz** | JSON: `torques[10]` | • **안전 워치독**: 100ms 미수신 시 $0.0\text{ Nm}$ 강제 차단.<br>• **클램핑**: 엄지 $\pm 1.8\text{ Nm}$, 4지 $\pm 2.5\text{ Nm}$ 자동 절삭. |
+| **`[IF-05A]`** | 4팀 $\rightarrow$ 1팀 | ZeroMQ / Shared Mem / UDP | 30 ~ 100 Hz | **촉각 임베딩 벡터 ($z_{\text{tac}} \in \mathbb{R}^{D}$)**<br>또는 잠재 토큰 (64D~128D) | • 4팀이 텍셀을 인코딩하여 **1팀 VLA로 직접 주입**.<br>• 3팀 통신 코어를 거치지 않고 상위 AI 계층으로 직결. |
+| **`[IF-05B]`** | 4팀 $\rightarrow$ 3-B | UDP Socket / IPC | 이벤트 발생 즉시 | 불리언 플래그: `slip_detected[5]`<br>법선력: `normal_forces[5]` | • **응답 속도 < 20 ms 엄수** (물체 낙하 방지 긴급 인터럽트).<br>• 3-B 제어팀이 파지력 즉각 상향 보정. |
+| **`[IF-06]`** | 1팀 내부 | Direct In-Memory (GPU) | 30 ~ 60 Hz | **비전 패치 임베딩 ($z_{\text{vis}}$)**<br>& 6D 포즈 ($T_{\text{wrist}}, T_{\text{obj}}$) | • **1팀 내부 직결 통로**.<br>• 외부 네트워크 통신을 거치지 않고 GPU 텐서로 즉시 VLA 전달. |
+| **`[IF-07A]`** | 3팀 $\rightarrow$ 1팀 | UDP Socket (`:5559`) | 20 ~ 30 Hz | 관절 프로프리오셉션 벡터 (`q[14]`, `dq[14]`) | • VLA의 State 토크나이저 입력으로 공급. |
+| **`[IF-07B]`** | 1팀 $\rightarrow$ 3-B | UDP Socket (`:5559`) | 10 ~ 30 Hz | JSON: `target_waypoints[5]`, `synergy_mode`, `force_limit` | • VLA의 출력을 3-B 제어기가 받아 100Hz 부드러운 궤적으로 보간 추종.<br>• 변위 속도 $\le 0.15\text{ m/s}$ 스무딩 필수. |
 
 ---
 
-## 4. 팀별 필수 준수 구속 조건 상세 (Mandatory Guidelines by Team)
+## 4. 핵심 정리: 왜 이 통로가 정상인가?
 
-### [1팀: 비전 및 VLA 팀 필수 준수 사항]
-1. **좌표계 및 단위**: 모든 공간 위치는 **미터($\text{m}$)**, 각도는 **라디안($\text{rad}$)** 및 **쿼터니언($[q_x, q_y, q_z, q_w]$)** 정규화 형태를 유지해야 합니다.
-2. **레이턴시 상한선**: 비전 인식 및 VLA 토큰 생성의 총 지연 시간은 **최대 100ms(10Hz)**를 넘지 않아야 하며, 추론 지연이 발생할 경우 3팀의 워치독이 발동하지 않도록 심장박동(Heartbeat/Keep-alive) 패킷을 유지해야 합니다.
-3. **급격한 위치 뜀(Jumping) 방지**: VLA가 출력하는 손끝 목표 웨이포인트는 10ms 단위로 3팀 제어기가 추종하므로, 프레임 간 변위가 $15\text{ mm}$ 이상 급변하지 않도록 1팀 내부에서 1차 보간을 권장합니다.
-
-### [2팀: 기구 제작 팀 필수 준수 사항]
-1. **단일 에셋 경로 규칙**: 모든 3D STL 파일은 반드시 [`robotic_hand_ws/assets/meshes/`](file:///c:/MVP_project/literature/robotic_hand_ws/assets/meshes/) 단 한 곳에만 저장해야 하며, 서브 패키지 내부에 중복 복사본을 만들지 않습니다.
-2. **메쉬 좌표계 원점**: 각 링크의 STL 원점은 **해당 관절의 회전 축 중심(Center of Rotation)**에 일치시켜야 기구학 오차가 발생하지 않습니다.
-3. **텐던 결합비 보존**: 검지, 중지, 약지, 소지의 DIP 관절 결합 텐던비는 기구적으로 **$\theta_{DIP} = 0.8 \cdot \theta_{PIP}$**가 되도록 풀리 반경을 가공·조립해야 합니다.
-4. **통신 보드레이트**: 실제 모터 구동 보드(CAN / RS485)는 **1,000,000 bps (1 Mbps)** 통신 속도로 펌웨어 파라미터를 고정합니다.
-
-### [3팀: 저수준 제어 및 통신 주축 팀 필수 준수 사항]
-1. **통신 코어 (3-A, 사용자)**:
-   - 100Hz 타이머 주기를 엄격히 준수하며, 지터(Jitter)는 $\pm 1\text{ ms}$ 이내로 제어합니다.
-   - 100ms 동안 제어 패킷이 단절되면 즉시 하드웨어 및 MuJoCo의 모터 토크를 $0.0\text{ Nm}$로 강제 차단합니다.
-   - 1팀의 VLA 지령(`Port 5559`), 비전 포즈(`Port 5558`), 4팀의 촉각 이벤트(`Port 5557`)를 취합하여 3-B 제어팀에 투명하게 중계합니다.
-2. **제어 코어 (3-B, 동료 팀원)**:
-   - ROS 2나 C++ 없이 순수 파이썬 환경에서 `socket` 라이브러리를 논블로킹(`setblocking(False)`)으로 열어 버퍼 지연(Zero-latency) 없이 최신 1프레임만 취득합니다.
-   - 10개 모터 출력 토크는 규정된 한계치($\pm 1.8\text{ Nm}, \pm 2.5\text{ Nm}$)를 준수하여 계산합니다.
-
-### [4팀: 촉각 인식 팀 필수 준수 사항]
-1. **텍셀 데이터 순서**: 5개 손가락의 텍셀 어레이 순서는 `thumb(0) -> index(1) -> middle(2) -> ring(3) -> pinky(4)` 인덱스를 고정 준수합니다.
-2. **실시간성**: 슬립 감지 플래그(`slip_detected`)는 슬립 발생 시점으로부터 **20ms 이내**에 통신 코어로 리턴되어야 3팀 제어기가 물체 낙하 방지 보상 토크를 즉시 인가할 수 있습니다.
+1. **임베딩(Embedding)은 상위 지능 계층(1팀, 4팀)에서 직접 처리**:
+   - 비전 임베딩은 1팀 내부에서 GPU 메모리로 VLA에 직결됩니다.
+   - 촉각 임베딩 역시 4팀 인코더에서 1팀 VLA로 직결(`[IF-05A]`)되어 고차원 의미론적 파지 판단을 수행합니다.
+2. **저수준 물리 제어(3팀)는 가볍고 빠른 실시간 통로 유지**:
+   - 3팀은 무거운 영상/임베딩 중계 부담 없이, 100Hz 모터 구동과 안전 워치독(100ms), 20ms 촉각 슬립 보상(`[IF-05B]`)에만 집중하여 극한의 실시간성을 보장합니다.

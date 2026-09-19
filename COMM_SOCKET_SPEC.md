@@ -1,24 +1,31 @@
 # 다중 팀 협업용 그리퍼 소켓 통신 총괄 규격서 (COMM_SOCKET_SPEC)
+## [개정판: 멀티모달 임베딩 직결 및 정상화된 소켓 포트 규격]
 
-본 문서는 **통신 코어(Communication Core, 사용자 전담)**를 중심으로, 로봇 핸드 시스템 개발에 참여하는 **4대 협업 팀(제어 팀, 촉각 인식 팀, 손/물체 비전 인식 팀, VLA 상위 인공지능 팀)** 간의 실시간 소켓 통신 규격을 정의한 공식 인터페이스 문서입니다.
+본 문서는 **통신 코어(Communication Core, 사용자 전담)**와 **파이썬 저수준 제어기(3-B 팀원 전담)**, **VLA 상위 지능(1팀)**, **촉각 반사 제어(4팀)** 간의 실시간 소켓 통신 규격을 정의한 공식 규격서입니다.
+
+> [!IMPORTANT]
+> **임베딩(Embedding) 및 데이터 통로 원칙**:
+> - **1팀 비전 임베딩 ($z_{\text{vis}}$)**: 1팀 내부에서 GPU VRAM 상으로 VLA에 직접 주입 (`[IF-06]`). 3팀 통신 코어 소켓을 거치지 않습니다.
+> - **4팀 촉각 임베딩 ($z_{\text{tac}}$)**: 4팀 인코더에서 1팀 VLA로 직접 주입 (`[IF-05A]`, ZeroMQ / 고속 IPC).
+> - **3팀 통신 코어**: 물리적 모터 CAN 버스(100Hz), 관절 텔레메트리(`:5555`), 모터 토크 지령(`:5556`), VLA 관절 상태 공급 및 액션 목표 수신(`:5559`)에만 전념하여 실시간성과 안전성을 극대화합니다.
 
 ---
 
-## 1. 5대 입출력 소켓 채널 총괄표
+## 1. 통신 코어 실시간 소켓 채널 총괄표
 
-| 채널 번호 | 포트 (Port) | 프로토콜 | 데이터 흐름 | 협업 대상 팀 | 전송 주기 | 주요 데이터 내용 |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **CH 1** | **`5555`** | UDP (TX) | Comm $\rightarrow$ Control | **저수준 제어 팀** | 100 Hz (10ms) | 14 관절 각도/속도, 10 모터 실제 토크 |
-| **CH 2** | **`5556`** | UDP (RX) | Control $\rightarrow$ Comm | **저수준 제어 팀** | 최대 100 Hz | 10개 모터 지령 토크 (클램핑 $\pm 2.5\text{ Nm}$) |
-| **CH 3** | **`5557`** | UDP (양방향) | Comm $\leftrightarrow$ Tactile | **촉각 인식 팀** | 100 ~ 200 Hz | 원시 텍셀 압력 행렬 $\leftrightarrow$ 슬립/접촉 이벤트 |
-| **CH 4** | **`5558`** | UDP (RX) | Vision $\rightarrow$ Comm | **손/물체 비전 팀** | 30 ~ 60 Hz | 손목 6D 포즈, 손끝 3D 키포인트, 타깃 물체 포즈 |
-| **CH 5** | **`5559`** | UDP (양방향) | Comm $\leftrightarrow$ VLA | **VLA 상위 지능 팀** | 10 ~ 30 Hz | 멀티모달 상태 관측치 $\leftrightarrow$ 작업 공간 목표 액션 |
+| 채널 | 포트 (Port) | 프로토콜 | 전송 방향 | 협업 대상 팀 | 전송 주기 | 데이터 내용 및 역할 |
+| :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **CH 1** | **`5555`** | UDP (TX) | 3-A $\rightarrow$ 3-B | **저수준 제어 팀** | **100 Hz** (10ms) | `[IF-03]` 14 관절 각도/속도, 10 모터 실제 토크 |
+| **CH 2** | **`5556`** | UDP (RX) | 3-B $\rightarrow$ 3-A | **저수준 제어 팀** | 50 ~ **100 Hz** | `[IF-04]` 10 모터 지령 토크 (100ms 워치독, $\pm 2.5\text{ Nm}$ 클램핑) |
+| **CH 3** | **`5557`** | UDP (RX) | 4팀 $\rightarrow$ 3-B/3-A | **촉각 인식 팀** | **이벤트 즉시** | `[IF-05B]` 초고속 슬립(Slip) 감지 플래그 및 법선력 (< 20ms 긴급 반사) |
+| **CH 4** | **`5559`** | UDP (양방향) | 3팀 $\leftrightarrow$ 1팀 | **VLA 상위 지능** | 10 ~ 30 Hz | `[IF-07A]` 관절 프로프리오셉션 ($q, \dot{q}$) TX<br>`[IF-07B]` VLA 상위 액션 목표(웨이포인트) RX |
+| *(선택)* | *`5558`* | UDP (RX) | 1팀 $\rightarrow$ 3-A | 손 인식 (옵션) | 30 Hz | 외부 시각화/디버깅용 손목 포즈 (제어/임베딩 루프 외) |
 
 ---
 
 ## 2. 채널별 상세 패킷 규격 (JSON Schema)
 
-### CH 1. 관절 텔레메트리 (Port `5555`: Comm Core $\rightarrow$ 저수준 제어 팀, 100Hz)
+### CH 1. 관절 텔레메트리 (Port `5555`: 3-A 통신 코어 $\rightarrow$ 3-B 제어 팀, 100Hz)
 ```json
 {
   "seq": 1042,
@@ -28,154 +35,76 @@
   "dq": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
   "actuator_pos": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
   "actuator_vel": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-  "actuator_torque": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-  "tactile_force": [0.0, 0.0, 0.0, 0.0, 0.0]
+  "actuator_torque": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }
 ```
 
 ---
 
-### CH 2. 모터 제어 지령 (Port `5556`: 저수준 제어 팀 $\rightarrow$ Comm Core, 100Hz)
+### CH 2. 모터 제어 지령 (Port `5556`: 3-B 제어 팀 $\rightarrow$ 3-A 통신 코어, 100Hz)
 ```json
 {
   "mode": "torque",
   "torques": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }
 ```
-- **안전 규칙**: 100ms 동안 패킷 미수신 시 안전 워치독에 의해 전 모터 출력 $0.0\text{ Nm}$ 강제 차단.
+- **안전 규칙**:
+  1. **100ms 워치독**: 패킷 미수신 시간이 100ms를 초과하면 전 모터 토크 $0.0\text{ Nm}$ 강제 차단.
+  2. **하드웨어 클램핑**: 엄지 모터(ID 1, 2) $\pm 1.8\text{ Nm}$, 나머지 4지(ID 3~10) $\pm 2.5\text{ Nm}$ 초과분 자동 컷오프.
 
 ---
 
-### CH 3. 고해상도 촉각 센서 허브 (Port `5557`: Comm Core $\leftrightarrow$ 촉각 인식 팀)
-
-#### A. 원시 텍셀 스트림 (Comm Core $\rightarrow$ 촉각 팀, 100~200Hz)
-각 손가락 팁에 장착된 텍셀(Taxel) 어레이 원시 센서 데이터:
+### CH 3. 초고속 슬립 반사 신호 (Port `5557`: 4팀 촉각 $\rightarrow$ 3-B 제어기, < 20ms)
+4팀 촉각 센서에서 물체 미끄러짐 발생 시 즉각 제어기로 인터럽트 인가:
 ```json
 {
-  "seq": 1042,
   "timestamp": 1726712345.125,
-  "taxels": {
-    "thumb": [0.0, 0.12, 0.45, 0.89, 0.0, ...],   // 16개 텍셀 압력값
-    "index": [0.0, 0.05, 0.33, 0.72, 0.0, ...],
-    "middle": [0.0, 0.0, 0.10, 0.20, 0.0, ...],
-    "ring": [0.0, 0.0, 0.0, 0.0, 0.0, ...],
-    "pinky": [0.0, 0.0, 0.0, 0.0, 0.0, ...]
-  }
+  "slip_detected": [false, true, false, false, false],
+  "normal_forces": [1.2, 0.4, 0.0, 0.0, 0.0],
+  "reflex_action": "boost_grip_force"
 }
 ```
-
-#### B. 해석된 촉각 이벤트 피드백 (촉각 팀 $\rightarrow$ Comm Core)
-촉각 인식 모델이 추론한 실시간 접촉 및 슬립 판정 결과:
-```json
-{
-  "contact_detected": [true, true, false, false, false],  // 5개 손가락 접촉 여부
-  "slip_detected": [false, false, false, false, false],     // 미끄러짐 감지 플래그
-  "normal_forces_N": [1.45, 0.82, 0.0, 0.0, 0.0],          // 손끝 법선력 추정치 (N)
-  "grasp_stability_score": 0.88                             // 파지 안정도 지수 (0.0 ~ 1.0)
-}
-```
+- **목적**: 3-B 제어기가 VLA 지령 대기 없이, 20ms 이내에 해당 손가락의 텐던 장력을 상향시켜 물체 낙하 방지.
 
 ---
 
-### CH 4. 손 및 물체 비전 인식 스트림 (Port `5558`: 손 인식 팀 $\rightarrow$ Comm Core, 30~60Hz)
-외부 광학 카메라 / Depth 센서 / 모션 트래커가 추적한 6D 포즈 정보:
-```json
-{
-  "timestamp": 1726712345.130,
-  "frame_id": "camera_optical_frame",
-  "palm_pose": {
-    "position": [0.120, -0.035, 0.250],                   // 손목/손바닥 중심 [X, Y, Z] (m)
-    "orientation_quat": [0.0, 0.7071, 0.0, 0.7071]       // 쿼터니언 [qx, qy, qz, qw]
-  },
-  "fingertip_keypoints_3d": [
-    [0.08, -0.02, 0.04],  // Thumb 3D
-    [0.13, -0.01, 0.05],  // Index 3D
-    [0.14,  0.00, 0.05],  // Middle 3D
-    [0.13,  0.02, 0.05],  // Ring 3D
-    [0.11,  0.04, 0.04]   // Pinky 3D
-  ],
-  "target_object": {
-    "name": "can",
-    "position": [0.150, 0.010, 0.220],
-    "bounding_box_size": [0.065, 0.065, 0.120]
-  },
-  "confidence": 0.96
-}
-```
+### CH 4. VLA 상위 연동 채널 (Port `5559`: 3팀 $\leftrightarrow$ 1팀 VLA)
 
----
-
-### CH 5. VLA 상위 지능 코어 (Port `5559`: Comm Core $\leftrightarrow$ VLA 인공지능 팀, 10~30Hz)
-
-#### A. 멀티모달 상태 관측치 (Comm Core $\rightarrow$ VLA 모델)
-관절 상태 + 비전 포즈 + 촉각 피드백을 단일 벡터로 번들링하여 VLA 입력으로 공급:
+#### A. 관절 프로프리오셉션 송신 (3-A $\rightarrow$ 1팀 VLA, 20~30Hz)
+VLA의 로봇 상태 토크나이저(State Tokenizer) 입력용:
 ```json
 {
   "seq": 1042,
   "timestamp": 1726712345.135,
   "q": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-  "dq": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-  "palm_pose": [0.12, -0.035, 0.25, 0.0, 0.7071, 0.0, 0.7071],
-  "object_pose": [0.15, 0.01, 0.22, 0.0, 0.0, 0.0, 1.0],
-  "tactile_summary": [1.45, 0.82, 0.0, 0.0, 0.0]
+  "dq": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 }
 ```
 
-#### B. VLA 상위 액션 지령 (VLA 모델 $\rightarrow$ Comm Core)
-VLA 모델이 언어 명령 및 비전에 기반하여 출력한 상위 태스크 지령:
+#### B. VLA 상위 액션 수신 (1팀 VLA $\rightarrow$ 3-B 제어기, 10~30Hz)
+VLA 파운데이션 모델이 추론한 작업공간 목표 액션:
 ```json
 {
   "task": "pick_and_lift",
   "synergy_mode": "precision_pinch",
-  "target_fingertip_waypoints": [
-    [0.05, -0.02, 0.03],  // Thumb 목표 위치
-    [0.09, -0.01, 0.02],  // Index 목표 위치
-    [0.09,  0.00, 0.02],  // Middle 목표 위치
-    [0.08,  0.02, 0.02],  // Ring 목표 위치
-    [0.07,  0.04, 0.02]   // Pinky 목표 위치
+  "target_waypoints": [
+    [0.05, -0.02, 0.03],
+    [0.09, -0.01, 0.02],
+    [0.09,  0.00, 0.02],
+    [0.08,  0.02, 0.02],
+    [0.07,  0.04, 0.02]
   ],
-  "max_contact_force_limit_N": 3.0
+  "max_force_limit_N": 3.0
 }
 ```
-통신 코어는 이 VLA 지령을 저수준 제어팀(`Port 5555`)으로 릴레이하거나 내부 기구학 제어기로 전달하여 손가락이 목표 웨이포인트를 추종하도록 지시합니다.
+- 3-B 제어기가 이를 받아 100Hz 부드러운 스플라인(Spline) 궤적으로 보간하고 모터 토크로 변환.
 
 ---
 
-## 3. 팀별 10줄 연결 스니펫
+## 3. 임베딩(Embedding) 직결 규격 (참고: 1팀 & 4팀 전용)
 
-### A. 촉각 인식 팀 (Port 5557 연결)
-```python
-import socket, json
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(("0.0.0.0", 5557))
-# 1. 원시 텍셀 수신
-raw_data, _ = sock.recvfrom(8192)
-taxels = json.loads(raw_data.decode())["taxels"]
-# 2. 파지/슬립 판정 후 이벤트 송신
-feedback = {"contact_detected": [True, True, False, False, False], "slip_detected": [False]*5}
-sock.sendto(json.dumps(feedback).encode(), ("127.0.0.1", 5557))
-```
-
-### B. 손/물체 비전 인식 팀 (Port 5558 송신)
-```python
-import socket, json
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-vision_data = {
-    "palm_pose": {"position": [0.12, -0.03, 0.25], "orientation_quat": [0, 0.707, 0, 0.707]},
-    "target_object": {"name": "mug", "position": [0.15, 0.01, 0.22]}
-}
-sock.sendto(json.dumps(vision_data).encode(), ("127.0.0.1", 5558))
-```
-
-### C. VLA 상위 인공지능 팀 (Port 5559 연결)
-```python
-import socket, json
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.bind(("0.0.0.0", 5559))
-# 1. 멀티모달 관측치 수신
-obs_bytes, _ = sock.recvfrom(4096)
-obs = json.loads(obs_bytes.decode())
-# 2. VLA 추론 후 상위 액션 지령 송신
-action = {"task": "grasp", "synergy_mode": "pinch", "max_contact_force_limit_N": 2.5}
-sock.sendto(json.dumps(action).encode(), ("127.0.0.1", 5559))
-```
+- **[IF-06] 비전 임베딩 ($z_{\text{vis}}$)**:
+  - 1팀 내부에서 처리: RGB-D 카메라 $\rightarrow$ ViT/ResNet 인코더 $\rightarrow$ $z_{\text{vis}} \in \mathbb{R}^{B \times N \times D}$ (GPU VRAM 텐서로 VLA Cross-Attention에 직결).
+- **[IF-05A] 촉각 임베딩 ($z_{\text{tac}}$)**:
+  - 4팀 $\rightarrow$ 1팀 직결: 5개 텍셀 어레이 $\rightarrow$ 촉각 인코더 $\rightarrow$ $z_{\text{tac}} \in \mathbb{R}^{B \times 128}$ (ZeroMQ / IPC 토큰 스트림으로 1팀 VLA에 직결).
+- **원칙**: 3팀 통신 코어는 대용량 임베딩 텐서를 중계하지 않음.
