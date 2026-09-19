@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>4-Team 14 DoF Robotic Hand System Interface Contract</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+</head>
+<body class="bg-[var(--background)] text-[var(--foreground)] antialiased p-6">
+
+  <!-- Header Banner -->
+  <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 shadow-sm mb-6">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <div class="flex items-center gap-2 mb-2 flex-wrap">
+          <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-pink-500/10 text-pink-600 dark:text-pink-400 border border-pink-500/20">1팀: 비전 + VLA 지능</span>
+          <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-500/10 text-slate-600 dark:text-slate-400 border border-slate-500/20">2팀: 기구 제작</span>
+          <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 font-bold">3팀: 저수준 제어 + 통신 주축</span>
+          <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">4팀: 촉각 인식</span>
+        </div>
+        <h1 class="text-2xl font-bold tracking-tight text-[var(--foreground)]">4대 협업 팀별 공식 시스템 인터페이스 협약 (Interface Contract)</h1>
+        <p class="text-[var(--muted-foreground)] text-sm mt-1">
+          다이어그램의 <strong>식별 번호([IF-01] ~ [IF-07])</strong>와 <strong>구속 조건 명세표</strong>가 1:1로 매칭되는 실시간 인터페이스 표준
+        </p>
+      </div>
+      <div class="text-right">
+        <span class="text-xs text-[var(--muted-foreground)] block">모터 통신 / 안전 워치독</span>
+        <span class="text-base font-mono font-bold text-emerald-600 dark:text-emerald-400">CAN 1 Mbps / 100ms Failsafe</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4-Team Visual Architecture Diagram with Matching IF-XX Badges -->
+  <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 shadow-sm mb-6">
+    <h2 class="text-base font-semibold text-[var(--foreground)] mb-4 flex items-center justify-between">
+      <span class="flex items-center gap-2">
+        <svg class="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2"></path></svg>
+        4대 팀 아키텍처 다이어그램 (인터페이스 ID: [IF-01] ~ [IF-07])
+      </span>
+      <span class="text-xs text-[var(--muted-foreground)]">카드를 클릭하여 해당 인터페이스 명세를 확인하세요</span>
+    </h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      
+      <!-- Team 1 Card -->
+      <div class="bg-[var(--background)] border-2 border-pink-500/40 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <span class="font-bold text-sm text-pink-600 dark:text-pink-400">[1팀] 비전 + VLA 지능</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-pink-500/10 text-pink-600 border border-pink-500/20">Vision & VLA</span>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mb-3">
+            • 손목 6D 포즈 & 5지 3D 키포인트<br>
+            • 타깃 물체 6D 바운딩 박스<br>
+            • OpenVLA / Octo 상위 작업 계획
+          </p>
+        </div>
+        <div class="space-y-1.5 border-t border-[var(--border)] pt-2 text-[11px] font-mono">
+          <div class="flex items-center justify-between p-1 rounded bg-[var(--card)]">
+            <span class="text-cyan-500 font-bold">[IF-06] 비전 포즈</span>
+            <span class="text-[10px]">UDP 5558 (30~60Hz)</span>
+          </div>
+          <div class="flex items-center justify-between p-1 rounded bg-[var(--card)]">
+            <span class="text-pink-500 font-bold">[IF-07] VLA 액션</span>
+            <span class="text-[10px]">UDP 5559 (10~30Hz)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Team 2 Card -->
+      <div class="bg-[var(--background)] border-2 border-slate-500/40 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <span class="font-bold text-sm text-slate-700 dark:text-slate-300">[2팀] 기구 제작 (CAD)</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-500/10 text-slate-600 border border-slate-500/20">Mechanical</span>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mb-3">
+            • 14 DoF 3D CAD & 44개 STL 메시<br>
+            • 10개 모터 배치 및 텐던 라우팅<br>
+            • DIP-PIP 0.8 결합비 풀리 가공<br>
+            • 모터 버스 배선 (CAN 1Mbps)
+          </p>
+        </div>
+        <div class="space-y-1.5 border-t border-[var(--border)] pt-2 text-[11px] font-mono">
+          <div class="flex items-center justify-between p-1 rounded bg-[var(--card)]">
+            <span class="text-slate-500 font-bold">[IF-01] CAD 단일 에셋</span>
+            <span class="text-[10px]">assets/</span>
+          </div>
+          <div class="flex items-center justify-between p-1 rounded bg-[var(--card)]">
+            <span class="text-amber-500 font-bold">[IF-02] 모터 버스</span>
+            <span class="text-[10px]">CAN 1,000,000 bps</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Team 3 Card (Main Hub) -->
+      <div class="bg-[var(--background)] border-2 border-indigo-500 rounded-xl p-4 shadow-sm flex flex-col justify-between relative ring-2 ring-indigo-500/20">
+        <div class="absolute -top-3 left-4 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full shadow">
+          사용자 전담 주축 팀
+        </div>
+        <div>
+          <div class="flex items-center justify-between mb-2 mt-1">
+            <span class="font-bold text-sm text-indigo-500">[3팀] 저수준 제어+통신</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-500 font-bold">Hub & Control</span>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mb-3">
+            • <strong>3-A (사용자)</strong>: 통신 코어 허브, 5채널 소켓 멀티플렉싱, 100ms 워치독, joint_mapping.yaml<br>
+            • <strong>3-B (팀원)</strong>: 순수 파이썬 100Hz 기구학 제어, 모터 토크 생성
+          </p>
+        </div>
+        <div class="space-y-1.5 border-t border-[var(--border)] pt-2 text-[11px] font-mono">
+          <div class="flex items-center justify-between p-1 rounded bg-[var(--card)]">
+            <span class="text-blue-500 font-bold">[IF-03] 관절 텔레메트리</span>
+            <span class="text-[10px]">UDP 5555 (100Hz)</span>
+          </div>
+          <div class="flex items-center justify-between p-1 rounded bg-[var(--card)]">
+            <span class="text-emerald-500 font-bold">[IF-04] 모터 토크 지령</span>
+            <span class="text-[10px]">UDP 5556 (100Hz)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Team 4 Card -->
+      <div class="bg-[var(--background)] border-2 border-amber-500/40 rounded-xl p-4 shadow-sm flex flex-col justify-between">
+        <div>
+          <div class="flex items-center justify-between mb-2">
+            <span class="font-bold text-sm text-amber-600 dark:text-amber-400">[4팀] 촉각 인식 (Tactile)</span>
+            <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 border border-amber-500/20">Tactile Hub</span>
+          </div>
+          <p class="text-xs text-[var(--muted-foreground)] mb-3">
+            • 손끝 5지 텍셀 원시 데이터 수집<br>
+            • 슬립(Slip) 20ms 이내 초고속 감지<br>
+            • 손끝 법선력(Fn) & 접촉 판정<br>
+            • 파지 안정도 지수(0~1) 추론
+          </p>
+        </div>
+        <div class="space-y-1.5 border-t border-[var(--border)] pt-2 text-[11px] font-mono">
+          <div class="flex items-center justify-between p-1 rounded bg-[var(--card)]">
+            <span class="text-amber-500 font-bold">[IF-05] 촉각 스트림 허브</span>
+            <span class="text-[10px]">UDP 5557 (100~200Hz)</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Detailed Contract Table (Matching [IF-01] ~ [IF-07]) -->
+  <div class="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 shadow-sm mb-6 overflow-hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-base font-semibold text-[var(--foreground)] flex items-center gap-2">
+        <svg class="w-5 h-5 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+        인터페이스 구속 조건 명세표 (Contract & Constraints Table)
+      </h2>
+      <span class="text-xs px-2.5 py-1 rounded bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 font-semibold">전 팀 필수 준수 (Mandatory)</span>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-left border-collapse text-xs">
+        <thead>
+          <tr class="border-b border-[var(--border)] text-[var(--muted-foreground)] bg-[var(--background)]">
+            <th class="py-2.5 px-3 font-semibold">ID</th>
+            <th class="py-2.5 px-3 font-semibold">송신 &rarr; 수신</th>
+            <th class="py-2.5 px-3 font-semibold">통신 방식 / 포트 (ROS 매핑)</th>
+            <th class="py-2.5 px-3 font-semibold">발행 주기 (Min ~ Max)</th>
+            <th class="py-2.5 px-3 font-semibold">보드레이트 / 대역폭</th>
+            <th class="py-2.5 px-3 font-semibold">데이터 구조</th>
+            <th class="py-2.5 px-3 font-semibold">필수 구속 조건 및 안전 불변식</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-[var(--border)]">
+          <!-- IF-01 -->
+          <tr class="hover:bg-[var(--background)]/50 transition">
+            <td class="py-2 px-3 font-mono font-bold text-slate-500">[IF-01]</td>
+            <td class="py-2 px-3 font-medium">2팀 &rarr; 3팀</td>
+            <td class="py-2 px-3 font-mono">단일 에셋 파일 주입</td>
+            <td class="py-2 px-3 text-[var(--muted-foreground)]">변경 시 즉시</td>
+            <td class="py-2 px-3 font-mono">로컬 디스크</td>
+            <td class="py-2 px-3 font-mono"><code>assets/meshes/</code><br><code>assets/models/</code></td>
+            <td class="py-2 px-3 text-[var(--muted-foreground)]">• STL은 <code>assets/meshes/</code>에만 단일 보관.<br>• XML 컴파일러 태그 <code>meshdir="../meshes"</code> 고정.</td>
+          </tr>
+
+          <!-- IF-02 -->
+          <tr class="hover:bg-[var(--background)]/50 transition">
+            <td class="py-2 px-3 font-mono font-bold text-amber-500">[IF-02]</td>
+            <td class="py-2 px-3 font-medium">3팀 &harr; 2팀</td>
+            <td class="py-2 px-3 font-mono">CAN Bus / RS-485</td>
+            <td class="py-2 px-3 font-bold text-emerald-600">100 Hz (10 ms)</td>
+            <td class="py-2 px-3 font-mono font-bold text-rose-500">1,000,000 bps (1 Mbps)</td>
+            <td class="py-2 px-3 font-mono">10모터 패킷 (Pos, Vel, Current)</td>
+            <td class="py-2 px-3 text-[var(--muted-foreground)]">• 모터 ID 1~10 고정.<br>• 하드웨어 퓨즈 및 과전류 차단 필수.<br>• 프레임 지연 &lt; 1.5ms.</td>
+          </tr>
+
+          <!-- IF-03 -->
+          <tr class="hover:bg-[var(--background)]/50 transition">
+            <td class="py-2 px-3 font-mono font-bold text-blue-500">[IF-03]</td>
+            <td class="py-2 px-3 font-medium">3-A &rarr; 3-B</td>
+            <td class="py-2 px-3 font-mono">UDP <strong>Port 5555</strong><br><span class="text-[10px] text-[var(--muted-foreground)]">(/gripper/telemetry)</span></td>
+            <td class="py-2 px-3 font-bold text-emerald-600">100 Hz 고정 (10 ms)</td>
+            <td class="py-2 px-3 font-mono">로컬 IPC (지연 &lt; 0.1ms)</td>
+            <td class="py-2 px-3 font-mono">JSON: <code>q[14]</code>, <code>dq[14]</code>,<br><code>actuator_torque[10]</code></td>
+            <td class="py-2 px-3 text-[var(--muted-foreground)]">• 14 관절 인덱스 순서(0~13) 엄수.<br>• 단위: 위치 <code>rad</code>, 속도 <code>rad/s</code>, 토크 <code>Nm</code>.<br>• 논블로킹 최신 1프레임 취득.</td>
+          </tr>
+
+          <!-- IF-04 -->
+          <tr class="hover:bg-[var(--background)]/50 transition">
+            <td class="py-2 px-3 font-mono font-bold text-emerald-500">[IF-04]</td>
+            <td class="py-2 px-3 font-medium">3-B &rarr; 3-A</td>
+            <td class="py-2 px-3 font-mono">UDP <strong>Port 5556</strong><br><span class="text-[10px] text-[var(--muted-foreground)]">(/gripper/torque_cmd)</span></td>
+            <td class="py-2 px-3 font-bold text-emerald-600">50 Hz ~ 100 Hz</td>
+            <td class="py-2 px-3 font-mono">로컬 IPC (지연 &lt; 0.1ms)</td>
+            <td class="py-2 px-3 font-mono">JSON: <code>mode: "torque"</code>,<br><code>torques[10]</code></td>
+            <td class="py-2 px-3 text-[var(--muted-foreground)]">• <strong>워치독</strong>: 100ms 초과 단절 시 토크 0.0 Nm 강제 차단.<br>• <strong>클램핑</strong>: 엄지 &plusmn;1.8Nm, 4지 &plusmn;2.5Nm 초과분 자동 절삭.</td>
+          </tr>
+
+          <!-- IF-05 -->
+          <tr class="hover:bg-[var(--background)]/50 transition">
+            <td class="py-2 px-3 font-mono font-bold text-amber-500">[IF-05]</td>
+            <td class="py-2 px-3 font-medium">3-A &harr; 4팀</td>
+            <td class="py-2 px-3 font-mono">UDP <strong>Port 5557</strong><br><span class="text-[10px] text-[var(--muted-foreground)]">(/tactile/taxel_stream)</span></td>
+            <td class="py-2 px-3 font-bold text-amber-600">100 Hz ~ 200 Hz</td>
+            <td class="py-2 px-3 font-mono">약 250 KB/s</td>
+            <td class="py-2 px-3 font-mono">TX: <code>taxels</code> (5지x16개)<br>RX: <code>slip[5]</code>, <code>forces[5]</code></td>
+            <td class="py-2 px-3 text-[var(--muted-foreground)]">• 슬립 감지 알고리즘 연산 지연 &lt; 20ms 엄수.<br>• 센서 노이즈 필터링(LPF 50Hz) 4팀 내부 완료 필수.</td>
+          </tr>
+
+          <!-- IF-06 -->
+          <tr class="hover:bg-[var(--background)]/50 transition">
+            <td class="py-2 px-3 font-mono font-bold text-cyan-500">[IF-06]</td>
+            <td class="py-2 px-3 font-medium">1팀 &rarr; 3-A</td>
+            <td class="py-2 px-3 font-mono">UDP <strong>Port 5558</strong><br><span class="text-[10px] text-[var(--muted-foreground)]">(/perception/wrist_pose)</span></td>
+            <td class="py-2 px-3 font-bold text-cyan-600">30 Hz ~ 60 Hz</td>
+            <td class="py-2 px-3 font-mono">약 50 KB/s</td>
+            <td class="py-2 px-3 font-mono">JSON: <code>palm_pose</code>, <code>keypoints[5]</code>,<br><code>target_object</code></td>
+            <td class="py-2 px-3 text-[var(--muted-foreground)]">• <strong>ROS REP-103 좌표계</strong> 준수 (X전방, Y좌측, Z상향, 단위 m).<br>• 신뢰도(<code>confidence</code>) 0.7 미만 시 플래그 0 전송.</td>
+          </tr>
+
+          <!-- IF-07 -->
+          <tr class="hover:bg-[var(--background)]/50 transition">
+            <td class="py-2 px-3 font-mono font-bold text-pink-500">[IF-07]</td>
+            <td class="py-2 px-3 font-medium">3-A &harr; 1팀</td>
+            <td class="py-2 px-3 font-mono">UDP <strong>Port 5559</strong><br><span class="text-[10px] text-[var(--muted-foreground)]">(/vla/action_stream)</span></td>
+            <td class="py-2 px-3 font-bold text-pink-600">10 Hz ~ 30 Hz</td>
+            <td class="py-2 px-3 font-mono">약 20 KB/s</td>
+            <td class="py-2 px-3 font-mono">TX: 관측치 번들<br>RX: <code>waypoints[5]</code>, <code>synergy</code></td>
+            <td class="py-2 px-3 text-[var(--muted-foreground)]">• 급격한 Step 지령 금지 (변위 속도 &le; 0.15 m/s 스무딩 필수).<br>• 최대 허용 접촉력 상한(<code>max_force_N</code>) 필드 필수.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Bottom Guidelines & Links -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+    <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4">
+      <h3 class="font-bold text-sm text-[var(--foreground)] mb-2">실제 통신 코드 위치</h3>
+      <p class="text-[var(--muted-foreground)] leading-relaxed">
+        • 통신 코어 허브: <code>communication_core/socket_server.py</code><br>
+        • 조인트 매핑 명세: <code>communication_core/joint_mapping.yaml</code><br>
+        • 단위 테스트: <code>communication_core/test_socket_comm.py</code>
+      </p>
+    </div>
+    <div class="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4">
+      <h3 class="font-bold text-sm text-[var(--foreground)] mb-2">타 팀 공유 문서 안내</h3>
+      <p class="text-[var(--muted-foreground)] leading-relaxed">
+        • 공식 인터페이스 계약서: <code>SYSTEM_INTERFACE_CONTRACT.md</code><br>
+        • 소켓 통신 규격 및 예제: <code>COMM_SOCKET_SPEC.md</code><br>
+        • 아키텍처 다이어그램: <code>DATA_FLOW_ARCHITECTURE.md</code>
+      </p>
+    </div>
+  </div>
+
+</body>
+</html>
