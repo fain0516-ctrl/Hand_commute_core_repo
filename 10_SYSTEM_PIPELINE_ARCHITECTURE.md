@@ -1,4 +1,4 @@
-# 5지 로봇 그리퍼 통합 시스템 파이프라인 블루프린트
+# 5지 로봇 그리퍼 통합 시스템 파이프라인 블루프린트 
 (Full System Pipeline Blueprint: Software & Physical Architecture)
 
 **문서 번호**: AI-PRIORITY-PIPE-20260922  
