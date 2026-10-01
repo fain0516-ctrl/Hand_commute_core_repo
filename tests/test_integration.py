@@ -1,0 +1,233 @@
+import json
+import socket
+import time
+import unittest
+
+from comm_core.config import CoreConfig, TeamChannelsConfig, config_from_dict
+from comm_core.core import STATUS_LINK_DOWN, STATUS_NORMAL, STATUS_WATCHDOG, CommCore
+from comm_core.fake_pico import FakePico
+from comm_core.pico_link import PicoLink, PicoLinkConfig
+from comm_core.protocol import CmdFlag, CmdMode
+
+
+def wait_for(cond, timeout=2.0, step=0.005):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(step)
+    return False
+
+
+def udp_listener():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    s.settimeout(1.0)
+    return s
+
+
+def recv_json(sock):
+    data, _ = sock.recvfrom(65535)
+    return json.loads(data)
+
+
+def drain(sock):
+    sock.setblocking(False)
+    last = None
+    try:
+        while True:
+            last = json.loads(sock.recvfrom(65535)[0])
+    except BlockingIOError:
+        pass
+    sock.settimeout(1.0)
+    return last
+
+
+class PicoLinkTest(unittest.TestCase):
+    def setUp(self):
+        self.pico = FakePico().start()
+        self.link_events = []
+        self.link = PicoLink(PicoLinkConfig(host="127.0.0.1", port=self.pico.port,
+                                            reconnect_min_s=0.02, reconnect_max_s=0.1),
+                             on_link_change=self.link_events.append)
+
+    def tearDown(self):
+        self.link.stop()
+        self.pico.stop()
+
+    def test_hello_command_state(self):
+        self.link.start()
+        self.assertTrue(wait_for(lambda: self.link.hello_ack is not None))
+        self.assertEqual((self.link.hello_ack.n_sts, self.link.hello_ack.n_pwm), (6, 4))
+        self.assertTrue(self.link.send_command(CmdMode.POSITION, [100] * 6 + [1600] * 4))
+        self.assertTrue(wait_for(lambda: self.link.latest_state is not None))
+        self.assertEqual(self.link.latest_state.actuators[0].position, 100)
+        self.assertEqual(self.link.latest_state.actuators[9].position, 1600)
+
+    def test_reconnect_after_drop(self):
+        self.link.start()
+        self.assertTrue(wait_for(lambda: self.link.connected))
+        self.pico.drop_connection()
+        self.assertTrue(wait_for(lambda: self.pico.connections >= 2))
+        self.assertTrue(wait_for(lambda: self.link.connected))
+        self.assertTrue(self.link.send_command(CmdMode.TORQUE, [0] * 10))
+
+    def test_link_timeout_when_pico_silent(self):
+        self.link.start()
+        self.assertTrue(wait_for(lambda: self.link.connected))
+        self.pico.mute = True
+        # 재연결이 빨라 connected 는 곧 다시 True 가 되므로 끊김 이벤트로 확인
+        self.assertTrue(wait_for(lambda: False in self.link_events, timeout=1.5))
+
+    def test_stop_sends_estop(self):
+        self.link.start()
+        self.assertTrue(wait_for(lambda: self.link.connected))
+        self.link.stop()
+        self.assertTrue(wait_for(lambda: self.pico.estops == 1))
+
+
+class CommCoreTest(unittest.TestCase):
+    def setUp(self):
+        self.pico = FakePico().start()
+        self.telemetry = udp_listener()
+        self.slip_sink = udp_listener()
+        self.vla_sink = udp_listener()
+        self.proprio_sink = udp_listener()
+        cfg = CoreConfig(
+            pico=PicoLinkConfig(host="127.0.0.1", port=self.pico.port, reconnect_min_s=0.02),
+            channels=TeamChannelsConfig(
+                bind_host="127.0.0.1", telemetry_port=0, command_port=0, slip_port=0, vla_port=0,
+                telemetry_dest=self.telemetry.getsockname(),
+                proprio_dest=self.proprio_sink.getsockname(),
+                slip_relay_dest=self.slip_sink.getsockname(),
+                vla_action_relay_dest=self.vla_sink.getsockname(),
+            ),
+        )
+        self.core = CommCore(cfg)
+        self.core.start()
+        self.assertTrue(wait_for(lambda: self.core.link.connected))
+        self.sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def tearDown(self):
+        self.core.close()
+        self.pico.stop()
+        for s in (self.telemetry, self.slip_sink, self.vla_sink, self.proprio_sink, self.sender):
+            s.close()
+
+    def send(self, endpoint, msg):
+        self.sender.sendto(json.dumps(msg).encode(), endpoint.address)
+
+    def tick(self, n=1, dt=0.01):
+        for _ in range(n):
+            self.core.step(time.monotonic())
+            time.sleep(dt)
+
+    def test_no_command_means_zero_torque_and_watchdog_status(self):
+        self.tick(3)
+        self.assertTrue(wait_for(lambda: self.pico.last_cmd is not None))
+        self.assertEqual(self.pico.last_cmd.mode, CmdMode.TORQUE)
+        self.assertEqual(self.pico.last_cmd.values, [0] * 10)
+        self.assertEqual(self.pico.last_cmd_flags & CmdFlag.WATCHDOG_TRIPPED, CmdFlag.WATCHDOG_TRIPPED)
+        self.assertEqual(recv_json(self.telemetry)["status"], STATUS_WATCHDOG)
+
+    def test_torque_command_is_clamped_and_forwarded(self):
+        self.send(self.core.cmd_rx, {"mode": "torque", "torques": [5.0, -5.0] + [1.0] * 7 + [-9.0]})
+        self.tick(2)
+        self.assertTrue(wait_for(lambda: self.pico.last_cmd is not None and self.pico.last_cmd.values[2] == 1000))
+        v = self.pico.last_cmd.values
+        self.assertEqual(v[0], 1800)    # 엄지 +-1.8 Nm
+        self.assertEqual(v[1], -1800)
+        self.assertEqual(v[9], -2500)   # 나머지 +-2.5 Nm
+        self.assertEqual(self.pico.last_cmd_flags, 0)
+        self.assertEqual(drain(self.telemetry)["status"], STATUS_NORMAL)
+
+    def test_watchdog_trips_after_100ms(self):
+        self.send(self.core.cmd_rx, {"mode": "torque", "torques": [1.0] * 10})
+        self.tick(2)
+        self.assertEqual(self.core.status(), STATUS_NORMAL)
+        time.sleep(0.15)
+        self.tick(2)
+        self.assertEqual(self.core.status(), STATUS_WATCHDOG)
+        self.assertTrue(wait_for(lambda: self.pico.last_cmd.values == [0] * 10))
+        self.assertEqual(self.core.stats["watchdog_trips"], 1)
+
+    def test_invalid_commands_rejected(self):
+        for bad in ({"mode": "torque", "torques": [1.0] * 9},
+                    {"mode": "torque", "torques": [float("nan")] * 10},
+                    {"mode": "dance"}):
+            self.sender.sendto(json.dumps(bad).encode(), self.core.cmd_rx.address)
+        self.sender.sendto(b"not json", self.core.cmd_rx.address)
+        time.sleep(0.02)
+        for _ in range(4):
+            self.tick(1)
+        self.assertEqual(self.core.status(), STATUS_WATCHDOG)
+        self.assertGreaterEqual(self.core.stats["cmd_rejected"] + self.core.cmd_rx.rx_bad, 2)
+
+    def test_position_command_and_telemetry(self):
+        q = [0.5] * 6 + [0.0] * 4
+        self.send(self.core.cmd_rx, {"mode": "position", "positions": q})
+        self.tick(3)
+        self.assertTrue(wait_for(lambda: self.pico.positions[0] != 2048))
+        self.assertEqual(self.pico.last_cmd.mode, CmdMode.POSITION)
+        self.assertEqual(self.pico.positions[0], 2048 + round(0.5 / (2 * 3.141592653589793 / 4096)))
+        self.tick(2)
+        t = drain(self.telemetry)
+        self.assertEqual(len(t["q"]), 14)
+        self.assertEqual(len(t["actuator_pos"]), 10)
+        self.assertAlmostEqual(t["q"][0], 0.5, places=2)
+        self.assertEqual(t["q"][13], 0.0)
+        p = drain(self.proprio_sink)
+        self.assertEqual(set(p), {"seq", "timestamp", "q", "dq"})
+
+    def test_slip_and_vla_relay(self):
+        slip = {"timestamp": 1.0, "slip_detected": [False, True, False, False, False],
+                "normal_forces": [1.2, 0.4, 0, 0, 0], "reflex_action": "boost_grip_force"}
+        action = {"task": "pick_and_lift", "synergy_mode": "precision_pinch",
+                  "target_waypoints": [[0.05, -0.02, 0.03]], "max_force_limit_N": 3.0}
+        self.send(self.core.slip_rx, slip)
+        self.send(self.core.vla, action)
+        time.sleep(0.02)
+        self.tick(1)
+        self.assertEqual(recv_json(self.slip_sink), slip)
+        self.assertEqual(recv_json(self.vla_sink), action)
+
+    def test_status_link_down(self):
+        self.pico.stop()
+        self.assertTrue(wait_for(lambda: not self.core.link.connected))
+        self.tick(1)
+        self.assertEqual(drain(self.telemetry)["status"], STATUS_LINK_DOWN)
+
+    def test_run_loop_rate(self):
+        self.send(self.core.cmd_rx, {"mode": "torque", "torques": [0.1] * 10})
+        before = self.pico.cmd_count
+        self.core.run(duration_s=0.5)
+        sent = self.pico.cmd_count - before
+        self.assertTrue(40 <= sent <= 55, sent)
+
+
+class ConfigTest(unittest.TestCase):
+    def test_example_config_loads(self):
+        from comm_core.config import load_config
+        cfg = load_config("config/comm_core.example.json")
+        self.assertEqual(cfg.channels.command_port, 5556)
+        self.assertEqual(cfg.channels.telemetry_dest, ("127.0.0.1", 15555))
+        self.assertEqual(len(cfg.actuators), 10)
+
+    def test_bad_keys_and_joint_map_rejected(self):
+        with self.assertRaises(ValueError):
+            config_from_dict({"typo_key": 1})
+        with self.assertRaises(ValueError):
+            config_from_dict({"joint_map": [{"actuator": 0}] * 13})
+        with self.assertRaises(ValueError):
+            config_from_dict({"joint_map": [{"actuator": 0}] * 13 + [{"joint": 13}]})
+
+    def test_coupled_joint(self):
+        jm = [{"actuator": i} for i in range(10)] + [{"joint": 9, "scale": 0.88}, None, None, None]
+        cfg = config_from_dict({"joint_map": jm})
+        from comm_core.core import TelemetryBuilder
+        q, _ = TelemetryBuilder(cfg).joints([0.0] * 9 + [1.0], [0.0] * 10)
+        self.assertAlmostEqual(q[10], 0.88)
+
+
+if __name__ == "__main__":
+    unittest.main()

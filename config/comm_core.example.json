@@ -1,0 +1,23 @@
+{
+  "loop_rate_hz": 100.0,
+  "command_watchdog_s": 0.1,
+  "pico": {
+    "host": "192.168.10.20",
+    "port": 5000,
+    "link_timeout_s": 0.3,
+    "heartbeat_interval_s": 0.1,
+    "pico_cmd_timeout_ms": 100
+  },
+  "channels": {
+    "bind_host": "0.0.0.0",
+    "telemetry_port": 5555,
+    "command_port": 5556,
+    "slip_port": 5557,
+    "vla_port": 5559,
+    "telemetry_dest": ["127.0.0.1", 15555],
+    "proprio_dest": null,
+    "proprio_rate_hz": 30.0,
+    "slip_relay_dest": ["127.0.0.1", 15557],
+    "vla_action_relay_dest": ["127.0.0.1", 15559]
+  }
+}
