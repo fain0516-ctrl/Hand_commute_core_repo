@@ -1,0 +1,51 @@
+# 손 모델: 액추에이터, 14 관절 매핑, DH 파라미터.
+# ※ DH 값과 텐던 환산 계수는 임시값이다 (6번 문서의 링크 길이 기준).
+#   팀원이 작성한 DH 표가 확정되면 joints[].dh 와 fingers[].base_* 만 교체하면 된다.
+
+# ---------------------------------------------------------------- 액추에이터
+# 순서 = Pico ACTUATOR_CMD/STATE 의 값 순서 = CH2 지령 배열 순서 (0~9)
+# STS3215: 0~4095 tick / 1회전, 2048 = 0 rad. Present Load(0.1% 단위) x nm_per_effort = 토크 추정치
+# 40KG PWM: 500~2500 us, 1500 us = 0 rad, 2000 us 폭 = 270 deg
+actuators:
+  - {name: thumb_base,    kind: sts, bus_id: 1, torque_limit_nm: 1.8, raw_min: 0,   raw_max: 4095, raw_zero: 2048, rad_per_raw: 0.0015339808, nm_per_effort: 0.0019}
+  - {name: thumb_tip,     kind: sts, bus_id: 2, torque_limit_nm: 1.8, raw_min: 0,   raw_max: 4095, raw_zero: 2048, rad_per_raw: 0.0015339808, nm_per_effort: 0.0019}
+  - {name: index_mcp,     kind: sts, bus_id: 3, torque_limit_nm: 2.5, raw_min: 0,   raw_max: 4095, raw_zero: 2048, rad_per_raw: 0.0015339808, nm_per_effort: 0.0019}
+  - {name: middle_mcp,    kind: sts, bus_id: 4, torque_limit_nm: 2.5, raw_min: 0,   raw_max: 4095, raw_zero: 2048, rad_per_raw: 0.0015339808, nm_per_effort: 0.0019}
+  - {name: ring_mcp,      kind: sts, bus_id: 5, torque_limit_nm: 2.5, raw_min: 0,   raw_max: 4095, raw_zero: 2048, rad_per_raw: 0.0015339808, nm_per_effort: 0.0019}
+  - {name: little_mcp,    kind: sts, bus_id: 6, torque_limit_nm: 2.5, raw_min: 0,   raw_max: 4095, raw_zero: 2048, rad_per_raw: 0.0015339808, nm_per_effort: 0.0019}
+  - {name: index_tendon,  kind: pwm, bus_id: 0, torque_limit_nm: 2.5, raw_min: 500, raw_max: 2500, raw_zero: 1500, rad_per_raw: 0.0023561945, nm_per_effort: 0.0}
+  - {name: middle_tendon, kind: pwm, bus_id: 1, torque_limit_nm: 2.5, raw_min: 500, raw_max: 2500, raw_zero: 1500, rad_per_raw: 0.0023561945, nm_per_effort: 0.0}
+  - {name: ring_tendon,   kind: pwm, bus_id: 2, torque_limit_nm: 2.5, raw_min: 500, raw_max: 2500, raw_zero: 1500, rad_per_raw: 0.0023561945, nm_per_effort: 0.0}
+  - {name: little_tendon, kind: pwm, bus_id: 3, torque_limit_nm: 2.5, raw_min: 500, raw_max: 2500, raw_zero: 1500, rad_per_raw: 0.0023561945, nm_per_effort: 0.0}
+
+# ---------------------------------------------------------------- 14 관절
+# 순서 = 텔레메트리 q[0..13] 순서.
+# q = offset + sum(scale * 값). 값은 액추에이터 각도(rad) 또는 앞에 정의된 관절.
+# source: null 이면 측정 불가로 0 보고.
+# dh: 표준 DH (Rot_z(q + theta_offset), Trans_z(d), Trans_x(a), Rot_x(alpha)), 단위 m / rad.
+# PIP: 텐던 모터 각도 x 0.5 는 임시 환산값. MCP 연성 보상(ΔL = r_mcp·Δq_mcp)이 필요하면
+#      {joint: <finger>_mcp, scale: -k} 항을 추가한다.
+joints:
+  - {name: thumb_opp,  finger: thumb,  limits: [-1.57, 1.57], offset: 0.0, source: [{actuator: thumb_base, scale: 1.0}],    dh: {a: 0.045,  alpha: 1.5707963, d: 0.0, theta_offset: 0.0}}
+  - {name: thumb_flex, finger: thumb,  limits: [0.0, 1.57],   offset: 0.0, source: [{actuator: thumb_tip, scale: 1.0}],     dh: {a: 0.035,  alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: index_mcp,  finger: index,  limits: [0.0, 1.57],   offset: 0.0, source: [{actuator: index_mcp, scale: 1.0}],     dh: {a: 0.040,  alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: index_pip,  finger: index,  limits: [0.0, 1.75],   offset: 0.0, source: [{actuator: index_tendon, scale: 0.5}],  dh: {a: 0.0158, alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: index_dip,  finger: index,  limits: [0.0, 1.55],   offset: 0.0, source: [{joint: index_pip, scale: 0.88}],       dh: {a: 0.0155, alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: middle_mcp, finger: middle, limits: [0.0, 1.57],   offset: 0.0, source: [{actuator: middle_mcp, scale: 1.0}],    dh: {a: 0.040,  alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: middle_pip, finger: middle, limits: [0.0, 1.75],   offset: 0.0, source: [{actuator: middle_tendon, scale: 0.5}], dh: {a: 0.0158, alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: middle_dip, finger: middle, limits: [0.0, 1.55],   offset: 0.0, source: [{joint: middle_pip, scale: 0.88}],      dh: {a: 0.0155, alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: ring_mcp,   finger: ring,   limits: [0.0, 1.57],   offset: 0.0, source: [{actuator: ring_mcp, scale: 1.0}],      dh: {a: 0.040,  alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: ring_pip,   finger: ring,   limits: [0.0, 1.75],   offset: 0.0, source: [{actuator: ring_tendon, scale: 0.5}],   dh: {a: 0.0158, alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: ring_dip,   finger: ring,   limits: [0.0, 1.55],   offset: 0.0, source: [{joint: ring_pip, scale: 0.88}],        dh: {a: 0.0155, alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: little_mcp, finger: little, limits: [0.0, 1.57],   offset: 0.0, source: [{actuator: little_mcp, scale: 1.0}],    dh: {a: 0.040,  alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: little_pip, finger: little, limits: [0.0, 1.75],   offset: 0.0, source: [{actuator: little_tendon, scale: 0.5}], dh: {a: 0.0158, alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+  - {name: little_dip, finger: little, limits: [0.0, 1.55],   offset: 0.0, source: [{joint: little_pip, scale: 0.88}],      dh: {a: 0.0155, alpha: 0.0, d: 0.0, theta_offset: 0.0}}
+
+# ---------------------------------------------------------------- 손가락 체인 (정기구학용)
+# 손바닥 좌표계: x = 손가락 방향, y = 엄지 쪽, z = 손등 방향. base_rpy 로 첫 관절 축(z_DH)을 맞춘다.
+fingers:
+  - {name: thumb,  base_xyz: [0.010,  0.035, 0.0], base_rpy: [0.0, 0.0, 0.7854],     joints: [thumb_opp, thumb_flex]}
+  - {name: index,  base_xyz: [0.080,  0.027, 0.0], base_rpy: [-1.5707963, 0.0, 0.0], joints: [index_mcp, index_pip, index_dip]}
+  - {name: middle, base_xyz: [0.085,  0.009, 0.0], base_rpy: [-1.5707963, 0.0, 0.0], joints: [middle_mcp, middle_pip, middle_dip]}
+  - {name: ring,   base_xyz: [0.080, -0.009, 0.0], base_rpy: [-1.5707963, 0.0, 0.0], joints: [ring_mcp, ring_pip, ring_dip]}
+  - {name: little, base_xyz: [0.072, -0.027, 0.0], base_rpy: [-1.5707963, 0.0, 0.0], joints: [little_mcp, little_pip, little_dip]}

@@ -10,7 +10,8 @@ Raspberry Pi 5 (4GB) 에서 도는 통신 코어입니다. 한쪽은 타 팀 UDP
 1팀 VLA  ──UDP 5559 액션──────▶ └──────────────┘ ──중계──▶ 3-B
 ```
 
-- 표준 라이브러리만 사용합니다 (Python 3.11, Pi OS Bookworm 기본). 추가 설치가 필요 없습니다.
+- Python 3.11 (Pi OS Bookworm 기본) + PyYAML 하나만 씁니다 (`sudo apt install python3-yaml`).
+- 코드에는 설정 기본값이 없습니다. 포트, 주기, 워치독, 액추에이터 범위, 관절 매핑, DH 파라미터는 모두 `config/*.yaml` 에서 읽고, 키가 빠지거나 오타가 있으면 시작할 때 오류로 알려줍니다.
 - 스레드는 Pico 링크용 1개뿐이고, UDP 채널은 100 Hz 루프에서 논블로킹으로 poll 합니다.
 
 ## 실행
@@ -19,8 +20,8 @@ Raspberry Pi 5 (4GB) 에서 도는 통신 코어입니다. 한쪽은 타 팀 UDP
 # 하드웨어 없이 시험: 가짜 Pico 서버
 python3 -m comm_core.fake_pico --port 5000
 
-# 통신 코어 (설정 파일 생략 시 기본값, Pico 기본 주소 192.168.10.20:5000)
-python3 -m comm_core --config config/comm_core.example.json
+# 통신 코어 (--config 생략 시 config/comm_core.yaml)
+python3 -m comm_core --config config/comm_core.yaml
 
 # 테스트
 python3 -m unittest discover -s tests -t .
@@ -31,7 +32,7 @@ python3 -m unittest discover -s tests -t .
 | 규칙 | 동작 |
 |---|---|
 | 100 ms 워치독 | CH2 지령이 100 ms 넘게 없으면 전 축 토크 0 지령(`WATCHDOG_TRIPPED` 플래그)으로 대체. 시작 직후에도 첫 지령 전까지 토크 0 |
-| 토크 클램핑 | 엄지(액추에이터 0, 1) ±1.8 Nm, 나머지 ±2.5 Nm. 설정 `actuators[].torque_limit_nm` |
+| 토크 클램핑 | 엄지(액추에이터 0, 1) ±1.8 Nm, 나머지 ±2.5 Nm. `hand_model.yaml` 의 `actuators[].torque_limit_nm` |
 | 위치 클램핑 | 액추에이터별 `raw_min`~`raw_max` (STS 0~4095 tick, PWM 500~2500 us) |
 | 잘못된 지령 | 길이 불일치, NaN/inf, 모르는 mode, 깨진 JSON 은 버리고 카운트만 증가 |
 | Pico 자체 워치독 | 연결 시 HELLO 로 `cmd_timeout_ms` 전달. **Pico 펌웨어는 이 시간 동안 지령이 없으면 스스로 토크를 해제해야 함** (Pi 가 죽거나 랜선이 빠진 경우 대비) |
@@ -55,7 +56,29 @@ python3 -m unittest discover -s tests -t .
 규격서 그대로 `seq, timestamp, status, q[14], dq[14], actuator_pos[10], actuator_vel[10], actuator_torque[10]`.
 `status` 는 `NORMAL` / `WATCHDOG` / `PICO_DISCONNECTED`.
 
-14 관절 값은 설정 `joint_map` 으로 만듭니다. 관절마다 `{"actuator": i, "scale": s}` 또는 다른 관절의 커플링 `{"joint": j, "scale": 0.88}` (예: DIP = 0.88·PIP), 모르면 `null`. 기본값은 관절 0~9 = 액추에이터 0~9, 10~13 = 0 인 임시 매핑이므로 관절 인덱스가 확정되면 교체해야 합니다.
+`actuator_torque` 는 STS3215 Present Load 값에 `nm_per_effort` 를 곱한 **추정치**입니다 (STS3215 에는 토크 센서와 토크 제어 모드가 없음). PWM 축은 0 입니다.
+
+## 설정 파일
+
+| 파일 | 내용 |
+|---|---|
+| `config/comm_core.yaml` | 루프 주기, 워치독, Pico 주소와 타임아웃, 팀 UDP 포트와 목적지 |
+| `config/hand_model.yaml` | 액추에이터(종류, 버스 ID, 원시값 범위, 단위 환산, 토크 한계), 14 관절, 손가락 체인 |
+
+14 관절은 `hand_model.yaml` 의 `joints` 순서가 곧 텔레메트리 `q[0..13]` 순서입니다. 관절 값은 이름으로 참조하는 선형식입니다.
+
+```yaml
+- name: index_pip
+  source: [{actuator: index_tendon, scale: 0.5}, {joint: index_mcp, scale: -0.2}]  # 합산
+  offset: 0.0
+  dh: {a: 0.0158, alpha: 0.0, d: 0.0, theta_offset: 0.0}
+- name: index_dip
+  source: [{joint: index_pip, scale: 0.88}]   # DIP = 0.88·PIP 커플링
+```
+
+`source: null` 이면 측정 불가로 0 을 보고합니다. `dh` 는 표준 DH(Rot_z(q+θ₀)·Trans_z(d)·Trans_x(a)·Rot_x(α)) 이고, `fingers` 의 기저 위치/자세와 함께 `comm_core/kinematics.py` 의 정기구학에 쓰입니다. `include_fingertips: true` 면 텔레메트리에 손끝 위치 `fingertips` 키가 추가됩니다.
+
+> 현재 DH 값, 손가락 기저 위치, 텐던→PIP 환산 계수(0.5)는 6번 문서의 링크 길이로 만든 **임시값**입니다. 팀 DH 표가 확정되면 YAML 만 고치면 됩니다.
 
 ## Pi ↔ Pico TCP 프로토콜 (펌웨어 구현용)
 

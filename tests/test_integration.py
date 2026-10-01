@@ -1,13 +1,18 @@
+import dataclasses
 import json
+import math
 import socket
 import time
 import unittest
 
-from comm_core.config import CoreConfig, TeamChannelsConfig, config_from_dict
+from comm_core.config import config_from_dict, load_config, read_file
 from comm_core.core import STATUS_LINK_DOWN, STATUS_NORMAL, STATUS_WATCHDOG, CommCore
 from comm_core.fake_pico import FakePico
-from comm_core.pico_link import PicoLink, PicoLinkConfig
+from comm_core.pico_link import PicoLink
 from comm_core.protocol import CmdFlag, CmdMode
+
+
+CONFIG = "config/comm_core.yaml"
 
 
 def wait_for(cond, timeout=2.0, step=0.005):
@@ -47,8 +52,9 @@ class PicoLinkTest(unittest.TestCase):
     def setUp(self):
         self.pico = FakePico().start()
         self.link_events = []
-        self.link = PicoLink(PicoLinkConfig(host="127.0.0.1", port=self.pico.port,
-                                            reconnect_min_s=0.02, reconnect_max_s=0.1),
+        pico_cfg = dataclasses.replace(load_config(CONFIG).pico, host="127.0.0.1", port=self.pico.port,
+                                       reconnect_min_s=0.02, reconnect_max_s=0.1)
+        self.link = PicoLink(pico_cfg,
                              on_link_change=self.link_events.append)
 
     def tearDown(self):
@@ -93,14 +99,18 @@ class CommCoreTest(unittest.TestCase):
         self.slip_sink = udp_listener()
         self.vla_sink = udp_listener()
         self.proprio_sink = udp_listener()
-        cfg = CoreConfig(
-            pico=PicoLinkConfig(host="127.0.0.1", port=self.pico.port, reconnect_min_s=0.02),
-            channels=TeamChannelsConfig(
+        base = load_config(CONFIG)
+        cfg = dataclasses.replace(
+            base,
+            pico=dataclasses.replace(base.pico, host="127.0.0.1", port=self.pico.port, reconnect_min_s=0.02),
+            channels=dataclasses.replace(
+                base.channels,
                 bind_host="127.0.0.1", telemetry_port=0, command_port=0, slip_port=0, vla_port=0,
                 telemetry_dest=self.telemetry.getsockname(),
                 proprio_dest=self.proprio_sink.getsockname(),
                 slip_relay_dest=self.slip_sink.getsockname(),
                 vla_action_relay_dest=self.vla_sink.getsockname(),
+                include_fingertips=True,
             ),
         )
         self.core = CommCore(cfg)
@@ -174,8 +184,10 @@ class CommCoreTest(unittest.TestCase):
         t = drain(self.telemetry)
         self.assertEqual(len(t["q"]), 14)
         self.assertEqual(len(t["actuator_pos"]), 10)
-        self.assertAlmostEqual(t["q"][0], 0.5, places=2)
-        self.assertEqual(t["q"][13], 0.0)
+        self.assertAlmostEqual(t["q"][0], 0.5, places=2)       # thumb_opp <- thumb_base
+        self.assertAlmostEqual(t["q"][2], 0.5, places=2)       # index_mcp <- index_mcp
+        self.assertAlmostEqual(t["q"][3], 0.0, places=6)       # index_pip <- 텐던 (0 rad 지령)
+        self.assertEqual(set(t["fingertips"]), {"thumb", "index", "middle", "ring", "little"})
         p = drain(self.proprio_sink)
         self.assertEqual(set(p), {"seq", "timestamp", "q", "dq"})
 
@@ -206,27 +218,76 @@ class CommCoreTest(unittest.TestCase):
 
 
 class ConfigTest(unittest.TestCase):
-    def test_example_config_loads(self):
-        from comm_core.config import load_config
-        cfg = load_config("config/comm_core.example.json")
+    def raw(self):
+        data = read_file(CONFIG)
+        data["hand_model"] = read_file("config/hand_model.yaml")
+        return data
+
+    def test_repo_config_loads(self):
+        cfg = load_config(CONFIG)
         self.assertEqual(cfg.channels.command_port, 5556)
         self.assertEqual(cfg.channels.telemetry_dest, ("127.0.0.1", 15555))
         self.assertEqual(len(cfg.actuators), 10)
+        self.assertEqual(cfg.n_joints, 14)
+        self.assertEqual([a.torque_limit_nm for a in cfg.actuators[:3]], [1.8, 1.8, 2.5])
 
-    def test_bad_keys_and_joint_map_rejected(self):
-        with self.assertRaises(ValueError):
-            config_from_dict({"typo_key": 1})
-        with self.assertRaises(ValueError):
-            config_from_dict({"joint_map": [{"actuator": 0}] * 13})
-        with self.assertRaises(ValueError):
-            config_from_dict({"joint_map": [{"actuator": 0}] * 13 + [{"joint": 13}]})
+    def test_missing_and_unknown_keys_rejected(self):
+        data = self.raw()
+        del data["pico"]["port"]
+        with self.assertRaisesRegex(ValueError, "pico.port: missing"):
+            config_from_dict(data)
+        data = self.raw()
+        data["channels"]["comand_port"] = 1
+        with self.assertRaisesRegex(ValueError, "unknown keys"):
+            config_from_dict(data)
+        data = self.raw()
+        data["loop_rate_hz"] = "fast"
+        with self.assertRaisesRegex(ValueError, "loop_rate_hz: expected a number"):
+            config_from_dict(data)
 
-    def test_coupled_joint(self):
-        jm = [{"actuator": i} for i in range(10)] + [{"joint": 9, "scale": 0.88}, None, None, None]
-        cfg = config_from_dict({"joint_map": jm})
+    def test_bad_joint_sources_rejected(self):
+        data = self.raw()
+        data["hand_model"]["joints"][0]["source"] = [{"actuator": "nope", "scale": 1.0}]
+        with self.assertRaisesRegex(ValueError, "unknown actuator"):
+            config_from_dict(data)
+        data = self.raw()
+        data["hand_model"]["joints"][3]["source"] = [{"joint": "index_dip", "scale": 1.0}]
+        with self.assertRaisesRegex(ValueError, "defined earlier"):
+            config_from_dict(data)
+
+    def test_joint_mapping_terms(self):
+        data = self.raw()
+        # index_pip = 0.5 * index_tendon - 0.2 * index_mcp + 0.1, index_dip = 0.88 * index_pip
+        data["hand_model"]["joints"][3]["source"] = [
+            {"actuator": "index_tendon", "scale": 0.5}, {"joint": "index_mcp", "scale": -0.2}]
+        data["hand_model"]["joints"][3]["offset"] = 0.1
+        data["hand_model"]["joints"][1]["source"] = None
+        cfg = config_from_dict(data)
         from comm_core.core import TelemetryBuilder
-        q, _ = TelemetryBuilder(cfg).joints([0.0] * 9 + [1.0], [0.0] * 10)
-        self.assertAlmostEqual(q[10], 0.88)
+        pos = [0.3, 0.7, 1.0, 0, 0, 0, 2.0, 0, 0, 0]
+        q, _ = TelemetryBuilder(cfg).joints(pos, [0.0] * 10)
+        self.assertAlmostEqual(q[0], 0.3)
+        self.assertEqual(q[1], 0.0)                     # source null -> 0
+        self.assertAlmostEqual(q[3], 0.5 * 2.0 - 0.2 * 1.0 + 0.1)
+        self.assertAlmostEqual(q[4], 0.88 * q[3])
+
+
+class KinematicsTest(unittest.TestCase):
+    def test_planar_finger_fk(self):
+        from comm_core.kinematics import HandKinematics
+        hand = load_config(CONFIG).hand
+        kin = HandKinematics(hand)
+        q = [0.0] * 14
+        tip0 = kin.fingertips(q)["index"]
+        # 펴진 상태: 기저 + 링크 길이 합만큼 x 방향
+        links = sum(hand.joints[hand.joint_index(n)].dh.a for n in ("index_mcp", "index_pip", "index_dip"))
+        self.assertAlmostEqual(tip0[0], 0.080 + links, places=6)
+        self.assertAlmostEqual(tip0[2], 0.0, places=6)
+        # MCP 90도 굴곡: 손가락이 손바닥 쪽(-z)으로 접힘
+        q[hand.joint_index("index_mcp")] = math.pi / 2
+        tip = kin.fingertips(q)["index"]
+        self.assertAlmostEqual(tip[0], 0.080, places=6)
+        self.assertAlmostEqual(tip[2], -links, places=6)
 
 
 if __name__ == "__main__":

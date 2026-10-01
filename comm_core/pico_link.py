@@ -32,16 +32,18 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class PicoLinkConfig:
-    host: str = "192.168.10.20"
-    port: int = 5000
-    connect_timeout_s: float = 1.0
-    send_timeout_s: float = 0.005       # 100Hz 루프를 막지 않도록 짧게
-    link_timeout_s: float = 0.3         # 이 시간 동안 아무 수신이 없으면 끊긴 것으로 판단
-    heartbeat_interval_s: float = 0.1
-    reconnect_min_s: float = 0.1
-    reconnect_max_s: float = 2.0
-    cmd_period_ms: int = 10
-    pico_cmd_timeout_ms: int = 100      # HELLO 로 Pico 에 전달하는 자체 워치독 시간
+    """값은 모두 설정 파일(config/comm_core.yaml 의 pico 섹션)에서 온다."""
+
+    host: str
+    port: int
+    connect_timeout_s: float
+    send_timeout_s: float           # 100Hz 루프를 막지 않도록 짧게
+    link_timeout_s: float           # 이 시간 동안 아무 수신이 없으면 끊긴 것으로 판단
+    heartbeat_interval_s: float
+    reconnect_min_s: float
+    reconnect_max_s: float
+    cmd_period_ms: int
+    pico_cmd_timeout_ms: int        # HELLO 로 Pico 에 전달하는 자체 워치독 시간
 
 
 class PicoLink:

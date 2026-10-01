@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from .config import ActuatorConfig, CoreConfig
+from .kinematics import HandKinematics
 from .pico_link import PicoLink
 from .protocol import CmdFlag, CmdMode, State
 from .team_channels import UdpEndpoint, parse_float_list
@@ -74,10 +75,22 @@ class CommandTranslator:
 
 
 class TelemetryBuilder:
-    """Pico 원시 상태 -> SI 단위 관절/액추에이터 값."""
+    """Pico 원시 상태 -> SI 단위 관절/액추에이터 값. 매핑은 hand_model.yaml 의 joints[].source."""
 
     def __init__(self, cfg: CoreConfig) -> None:
         self.cfg = cfg
+        hand = cfg.hand
+        # 이름 -> 인덱스는 시작 시 한 번만 풀어 둔다 (루프에서 문자열 검색 없음)
+        self._plan = []
+        for j in hand.joints:
+            terms = []
+            for t in j.source or []:
+                if t.actuator is not None:
+                    terms.append((True, hand.actuator_index(t.actuator), t.scale))
+                else:
+                    terms.append((False, hand.joint_index(t.joint), t.scale))
+            self._plan.append((j.source is not None, j.offset, terms))
+        self.kinematics = HandKinematics(hand) if cfg.channels.include_fingertips else None
 
     def actuators(self, state: Optional[State]) -> Tuple[List[float], List[float], List[float]]:
         n = len(self.cfg.actuators)
@@ -93,15 +106,18 @@ class TelemetryBuilder:
     def joints(self, act_pos: List[float], act_vel: List[float]) -> Tuple[List[float], List[float]]:
         q = [0.0] * self.cfg.n_joints
         dq = [0.0] * self.cfg.n_joints
-        for j, src in enumerate(self.cfg.joint_map):
-            if src is None:
+        for j, (measured, offset, terms) in enumerate(self._plan):
+            if not measured:
                 continue
-            if src.actuator is not None:
-                q[j] = act_pos[src.actuator] * src.scale
-                dq[j] = act_vel[src.actuator] * src.scale
-            else:
-                q[j] = q[src.joint] * src.scale
-                dq[j] = dq[src.joint] * src.scale
+            qj, dqj = offset, 0.0
+            for is_act, idx, scale in terms:
+                if is_act:
+                    qj += scale * act_pos[idx]
+                    dqj += scale * act_vel[idx]
+                else:
+                    qj += scale * q[idx]
+                    dqj += scale * dq[idx]
+            q[j], dq[j] = qj, dqj
         return q, dq
 
 
@@ -217,19 +233,19 @@ class CommCore:
         q, dq = self.telemetry.joints(pos, vel)
         self.seq += 1
         ts = time.time()
-        self.tx.send_json(
-            {
-                "seq": self.seq,
-                "timestamp": ts,
-                "status": self.status(),
-                "q": q,
-                "dq": dq,
-                "actuator_pos": pos,
-                "actuator_vel": vel,
-                "actuator_torque": tq,
-            },
-            ch.telemetry_dest,
-        )
+        msg = {
+            "seq": self.seq,
+            "timestamp": ts,
+            "status": self.status(),
+            "q": q,
+            "dq": dq,
+            "actuator_pos": pos,
+            "actuator_vel": vel,
+            "actuator_torque": tq,
+        }
+        if self.telemetry.kinematics is not None:
+            msg["fingertips"] = self.telemetry.kinematics.fingertips(q)
+        self.tx.send_json(msg, ch.telemetry_dest)
         if ch.proprio_dest is not None and now >= self._next_proprio:
             self._next_proprio = now + 1.0 / ch.proprio_rate_hz
             self.vla.send_json({"seq": self.seq, "timestamp": ts, "q": q, "dq": dq}, ch.proprio_dest)

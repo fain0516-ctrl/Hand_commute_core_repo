@@ -1,4 +1,4 @@
-"""실행: python3 -m comm_core [--config config/comm_core.example.json]"""
+"""실행: python3 -m comm_core [--config config/comm_core.yaml]"""
 
 import argparse
 import logging
@@ -10,7 +10,7 @@ from .core import CommCore
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Pi 5 comm core (team UDP <-> Pico 2 TCP)")
-    p.add_argument("--config", help="JSON config path (기본값 사용 시 생략)")
+    p.add_argument("--config", default="config/comm_core.yaml", help="YAML/JSON 설정 파일")
     p.add_argument("--stats-every", type=float, default=5.0, help="상태 로그 주기 (s), 0 이면 끔")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args()
