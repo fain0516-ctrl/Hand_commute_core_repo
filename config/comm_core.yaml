@@ -1,0 +1,32 @@
+# Pi 5 통신 코어 런타임 설정 (python3 -m comm_core --config config/comm_core.yaml)
+# 모든 키가 필수다. 누락/오타는 시작 시 오류로 알려준다.
+
+loop_rate_hz: 100.0          # 제어/통신 루프 주기
+command_watchdog_s: 0.1      # CH2 지령이 이 시간 넘게 없으면 전 축 토크 0
+
+hand_model: hand_model.yaml  # 이 파일 기준 상대경로
+
+pico:                        # Pico 2 + W5500 (TCP 서버)
+  host: 192.168.10.20
+  port: 5000
+  connect_timeout_s: 1.0
+  send_timeout_s: 0.005      # 송신이 루프를 막지 않도록 짧게
+  link_timeout_s: 0.3        # 이 시간 동안 수신이 없으면 끊김으로 판단
+  heartbeat_interval_s: 0.1
+  reconnect_min_s: 0.1       # 재연결 백오프 하한/상한
+  reconnect_max_s: 2.0
+  cmd_period_ms: 10          # HELLO 로 Pico 에 알려주는 지령 주기
+  pico_cmd_timeout_ms: 100   # Pico 자체 워치독: 이 시간 지령이 없으면 Pico 가 토크 해제
+
+channels:                    # 타 팀 UDP 채널 (COMM_SOCKET_SPEC)
+  bind_host: 0.0.0.0
+  telemetry_port: 5555       # CH1 송신 출발 포트
+  command_port: 5556         # CH2 3-B -> 3-A 지령 수신
+  slip_port: 5557            # CH3 4팀 슬립 신호 수신
+  vla_port: 5559             # CH4 1팀 VLA 양방향
+  telemetry_dest: [127.0.0.1, 15555]          # 3-B 텔레메트리 수신 주소
+  proprio_dest: null                          # 1팀 VLA 주소 (null = 미송신)
+  proprio_rate_hz: 30.0
+  slip_relay_dest: [127.0.0.1, 15557]         # 슬립 신호 즉시 중계 대상 (null = 중계 안 함)
+  vla_action_relay_dest: [127.0.0.1, 15559]   # VLA 액션 중계 대상 (null = 중계 안 함)
+  include_fingertips: false                   # true 면 텔레메트리에 DH 기반 손끝 위치 추가
