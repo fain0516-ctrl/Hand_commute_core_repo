@@ -66,6 +66,16 @@ python3 -m unittest tests.test_pico_fw -v     # 저장소 루트에서
 
 `src/proto.c`, `src/session.c` 를 리눅스용으로 컴파일한 시뮬레이터(`host/sim_main.c`, W5500 대신 POSIX 소켓)에 Pi 쪽 `comm_core.PicoLink` 를 실제로 붙여 HELLO, 위치 지령/STATE, 값 잘림, 토크 해제, Pico 워치독, ESTOP, 새 연결 우선, 깨진 바이트 재동기화를 검사합니다. 설정 생성기의 핀 검사도 같이 돌립니다. W5500/UART/PWM 드라이버는 실제 보드에서 확인해야 합니다.
 
+### 가상 입력 -> 펌웨어 출력 확인
+
+```bash
+python3 pico_fw/host/pipeline_check.py --out report.md
+```
+
+팀 UDP 포트(CH2 지령, CH3 슬립, CH4 VLA)에 가상 입력을 넣고, 실제 `comm_core.CommCore` 가 보낸 TCP 지령을 펌웨어가 처리한 결과를 기록합니다.
+이 경우 펌웨어는 서보 루프(`actuators.c`, `sts_bus.c`)까지 포함해 `host/hal_stub.c` (Pico SDK 대체, 가짜 STS3215 6개) 위에서 돕니다.
+기록하는 출력은 세 가지입니다: Pi 로 가는 TCP 프레임, 서보 버스 UART 패킷, PWM 펄스 폭. 시나리오별로 분류해 보고서로 냅니다.
+
 ## 업로드된 컨트롤러 PCB 검토 (middleware_pcb_rev0)
 
 업로드 파일은 거버가 아니라 Altium 원본(`*.PcbDoc`, `*.SchDoc` 16장)입니다. PcbDoc 의 패드별 넷과 회로도의 U2 핀 이름을 맞춰 읽었습니다. **넷 라벨 이름은 실제 GPIO 번호와 다릅니다** (예: 넷 `SCK` 는 GPIO6, 넷 `SDO` 는 GPIO32). 아래는 U2 핀 기준입니다.

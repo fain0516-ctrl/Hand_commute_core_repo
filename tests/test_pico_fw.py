@@ -257,3 +257,25 @@ class FirmwareSimTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("gcc"), "gcc 없음")
+class PipelineCheckTest(unittest.TestCase):
+    """가상 팀 입력 -> 실제 CommCore -> 펌웨어(서보 루프 포함, SDK 대체) 출력 확인 스크립트가 기대대로 나오는지."""
+
+    def test_pipeline_outputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "report.md")
+            subprocess.run([sys.executable, os.path.join(FW, "host", "pipeline_check.py"), "--out", out],
+                           check=True, capture_output=True, timeout=60, cwd=ROOT)
+            with open(out, encoding="utf-8") as f:
+                report = f.read()
+        sections = {s.split("\n", 1)[0]: s for s in report.split("\n## ")}
+        pos = sections["2 position"]
+        self.assertIn("SYNC_WRITE GOAL_POSITION+TIME+SPEED: `{1:2374, 2:2309, 3:2244, 4:2178, 5:2113, 6:1983}`", pos)
+        self.assertIn("GPIO6=1500us, GPIO7=1627us, GPIO8=1755us, GPIO9=1373us", pos)
+        self.assertIn("ERROR x1", sections["4 torque != 0"])
+        self.assertIn("GPIO6=0us", sections["6 torque = 0"])
+        lat = sections["9 position 후 Pi 루프 정지"].split("쓰기 후 ")[1].split(" ms")[0]
+        self.assertTrue(80 <= int(lat) <= 160, lat)   # Pico 자체 워치독 (cmd_timeout 100 ms)
+        self.assertIn("토크 해제", sections["10 position 중 Pi 종료"])

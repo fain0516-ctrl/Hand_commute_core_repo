@@ -5,6 +5,12 @@
  *
  *   ./fw_sim <port>     (0 이면 임의 포트, 실제 포트를 첫 줄에 "port N" 으로 출력)
  *
+ * -DFW_SIM_REAL_ACTUATORS 로 빌드하면 가짜 액추에이터 대신 펌웨어의 actuators.c + sts_bus.c 를
+ * host/hal_stub.c (SDK 대체) 위에서 그대로 돌린다. 이때 출력:
+ *   tcp <ms> <hex>   Pi 로 보낸 TCP 프레임
+ *   bus <ms> <hex>   서보 버스(UART)로 보낸 패킷
+ *   pwm <ms> <gpio> <us>  PWM 레벨 변화
+ *
  * 펌웨어 main.c 와 같은 규칙: 새 연결이 오면 이전 연결을 끊고, link_idle_timeout 동안 수신이 없으면 끊는다.
  */
 #define _POSIX_C_SOURCE 200809L
@@ -22,6 +28,9 @@
 
 #include "fw_config.h"
 #include "session.h"
+#ifdef FW_SIM_REAL_ACTUATORS
+#include "actuators.h"
+#endif
 
 static const fw_actuator_t ACTS[FW_N_ACT] = FW_ACTUATORS_INIT;
 static int32_t pos[FW_N_ACT];
@@ -36,11 +45,20 @@ static uint64_t now_us64(void) {
 
 static void io_send(void *ctx, const uint8_t *data, uint16_t len) {
     (void)ctx;
+#ifdef FW_SIM_REAL_ACTUATORS
+    printf("tcp %u ", (unsigned)(now_us64() / 1000));
+    for (uint16_t i = 0; i < len; i++)
+        printf("%02x", data[i]);
+    printf("\n");
+#endif
     if (client >= 0)
         (void)!send(client, data, len, MSG_NOSIGNAL);
 }
 static void io_apply(void *ctx, const int32_t *t, uint32_t mask) {
     (void)ctx;
+#ifdef FW_SIM_REAL_ACTUATORS
+    actuators_apply(t, mask);
+#endif
     for (int i = 0; i < FW_N_ACT; i++)
         if (mask & (1u << i))
             pos[i] = t[i];
@@ -48,10 +66,16 @@ static void io_apply(void *ctx, const int32_t *t, uint32_t mask) {
 }
 static void io_release(void *ctx, uint32_t mask) {
     (void)ctx;
+#ifdef FW_SIM_REAL_ACTUATORS
+    actuators_release(mask);
+#endif
     enabled &= ~mask;
 }
 static bool io_read_state(void *ctx, proto_axis_state_t *out, uint8_t n) {
     (void)ctx;
+#ifdef FW_SIM_REAL_ACTUATORS
+    return actuators_read_state(out, n);
+#endif
     for (uint8_t i = 0; i < n; i++) {
         memset(&out[i], 0, sizeof out[i]);
         if (i < FW_N_ACT) {
@@ -88,10 +112,15 @@ int main(int argc, char **argv) {
     session_init(&sess, &cfg, &io);
     uint32_t last_rx_ms = 0;
     uint8_t buf[2048];
+#ifdef FW_SIM_REAL_ACTUATORS
+    actuators_setup();
+    actuators_bus_start();
+    uint64_t next_step = now_us64();
+#endif
 
     for (;;) {
         struct pollfd fds[2] = {{srv, POLLIN, 0}, {client, POLLIN, 0}};
-        poll(fds, client >= 0 ? 2 : 1, 2);
+        poll(fds, client >= 0 ? 2 : 1, 1);
         uint64_t t = now_us64();
         uint32_t now_ms = (uint32_t)(t / 1000), now_us = (uint32_t)t;
         if (fds[0].revents & POLLIN) {
@@ -125,6 +154,13 @@ int main(int argc, char **argv) {
             client = -1;
         }
         session_tick(&sess, now_ms);
+#ifdef FW_SIM_REAL_ACTUATORS
+        if (t >= next_step) { /* core1 루프 대신 같은 주기로 한 단계씩 */
+            actuators_step();
+            next_step = t + FW_STS_LOOP_PERIOD_US;
+            fflush(stdout);
+        }
+#endif
         /* 테스트가 내부 상태를 볼 수 있도록 바뀔 때만 출력 */
         static uint32_t last_en = 0xFFFFFFFFu;
         if (enabled != last_en) {

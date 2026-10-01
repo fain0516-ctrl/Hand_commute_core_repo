@@ -14,3 +14,8 @@ void actuators_apply(const int32_t *targets, uint32_t mask);
 void actuators_release(uint32_t mask);
 bool actuators_read_state(proto_axis_state_t *out, uint8_t n); /* 버스 고장이면 true */
 uint32_t actuators_loop_count(void);
+
+/* core1 루프를 나눈 단계 (호스트 시뮬레이터가 core1 없이 직접 돌릴 때 사용) */
+void actuators_setup(void);     /* 우편함/PWM 초기화 (core1 시작 안 함) */
+void actuators_bus_start(void); /* 서보 버스 초기화 + 전 축 토크 해제 */
+void actuators_step(void);      /* 루프 1회 */
