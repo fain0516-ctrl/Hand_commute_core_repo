@@ -1,0 +1,41 @@
+# Pico 2 컨트롤러 펌웨어 설정. 빌드할 때 tools/gen_config.py 가 fw_config.h 로 바꾼다.
+# 모든 키가 필수다. 누락/오타는 빌드(cmake) 단계에서 오류로 알려준다.
+# 핀 배치는 보드 파일(config/boards/*.yaml)에 있다: cmake -DFW_BOARD=<이름>
+
+fw_version: 0x0100             # HELLO_ACK 로 Pi 에 보고 (상위 바이트 major, 하위 minor)
+
+shared:                        # Pi 쪽 설정을 그대로 읽어 같은 값을 두 번 쓰지 않는다 (이 파일 기준 상대경로)
+  comm_core: ../../config/comm_core.yaml    # pico.host(IP), pico.port, pico.pico_cmd_timeout_ms
+  hand_model: ../../config/hand_model.yaml  # actuators: 순서, kind, bus_id, raw_min/raw_max
+
+network:
+  mac: "02:48:43:00:00:14"     # 로컬 관리 주소 (02:..). 보드가 여러 개면 끝자리만 바꾼다
+  netmask: 255.255.255.0
+  gateway: 192.168.10.1
+  listen_sockets: 2            # 같은 포트에서 대기하는 W5500 소켓 수. 새 연결이 오면 이전 연결을 끊는다
+                               # (랜선이 빠졌다 다시 꽂혀 이전 연결이 좀비로 남아도 Pi 재연결을 바로 받기 위함)
+  socket_buf_kb: 8             # 소켓당 RX/TX 버퍼 (W5500 전체 16 KB, listen_sockets x 이 값 <= 16)
+  link_idle_timeout_ms: 500    # 이 시간 동안 수신이 없으면 연결을 끊고 다시 대기 (Pi 는 100 ms 마다 HEARTBEAT)
+  retry_time_100us: 2000       # W5500 TCP 재전송 간격 (100 us 단위, 2000 = 200 ms)
+  retry_count: 8
+  keepalive_5s: 1              # W5500 keep-alive 간격 (5 s 단위, 0 = 끔)
+
+servo_bus:                     # FeeTech STS3215 (SCS 프로토콜)
+  baud: 1000000                # STS3215 기본값
+  response_timeout_us: 1500    # 읽기 응답 대기 한계
+  return_delay_us: 0           # 패킷 사이 여유 (서보 Return Delay 설정과 맞춘다)
+  loop_period_us: 2000         # 서보 루프 주기 (core1). 지령은 다음 주기 안에 버스로 나간다
+  reads_per_loop: 2            # 한 주기에 읽는 서보 수 (라운드로빈). 6 축이면 6 ms 마다 전 축 갱신
+  goal_speed: 0                # Sync Write 의 목표 속도 (0 = 최대)
+  goal_acc: 0                  # 가속도 레지스터 (0 = 최대). 시작 시 한 번 쓴다
+  torque_off_repeat_ms: 50     # 토크 해제 상태에서 해제 패킷을 반복 송신하는 주기 (응답 없는 패킷이라 확실히 하려고)
+  max_missed_reads: 3          # 연속으로 이만큼 응답이 없으면 해당 축에 NO_RESPONSE 플래그
+
+pwm:                           # 40KG PWM 서보 (텐던)
+  frequency_hz: 50
+  release_mode: low            # 토크 해제 시: low = 펄스 끊기, hold = 마지막 펄스 유지
+
+safety:
+  hw_watchdog_ms: 500          # RP2350 하드웨어 워치독. 메인 루프가 멈추면 리셋 (리셋 후 토크 해제 상태로 시작)
+  min_cmd_timeout_ms: 20       # HELLO 로 받은 cmd_timeout_ms 의 허용 범위 (벗어나면 잘라 쓴다)
+  max_cmd_timeout_ms: 1000
