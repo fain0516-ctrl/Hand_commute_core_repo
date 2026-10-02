@@ -17,6 +17,7 @@ pico:                        # Pico 2 + W5500 (TCP 서버)
   reconnect_max_s: 2.0
   cmd_period_ms: 10          # HELLO 로 Pico 에 알려주는 지령 주기
   pico_cmd_timeout_ms: 100   # Pico 자체 워치독: 이 시간 지령이 없으면 Pico 가 토크 해제
+  state_stale_s: 0.05        # 마지막 STATE 가 이보다 오래되면 관측 불가 (텔레메트리 status = PICO_STALE)
 
 channels:                    # 타 팀 UDP 채널 (COMM_SOCKET_SPEC)
   bind_host: 0.0.0.0
@@ -30,3 +31,4 @@ channels:                    # 타 팀 UDP 채널 (COMM_SOCKET_SPEC)
   slip_relay_dest: [127.0.0.1, 15557]         # 슬립 신호 즉시 중계 대상 (null = 중계 안 함)
   vla_action_relay_dest: [127.0.0.1, 15559]   # VLA 액션 중계 대상 (null = 중계 안 함)
   include_fingertips: false                   # true 면 텔레메트리에 DH 기반 손끝 위치 추가
+  include_diagnostics: false                  # true 면 텔레메트리에 축별 신선도/고장 단계/링크 품질 추가 (규격 외 확장 키)

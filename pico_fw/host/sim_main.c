@@ -12,6 +12,14 @@
  *   pwm <ms> <gpio> <us>  PWM 레벨 변화
  *
  * 펌웨어 main.c 와 같은 규칙: 새 연결이 오면 이전 연결을 끊고, link_idle_timeout 동안 수신이 없으면 끊는다.
+ *
+ * 고장 주입: stdin 으로 한 줄씩 명령을 받는다 ("fault <명령>"). TCP 쪽 명령은 여기서, 서보 버스 쪽은
+ * hal_stub.c 의 hal_fault() 가 처리한다 (FW_SIM_REAL_ACTUATORS 일 때만).
+ *   fault tcp_rx_flip <ppm>   Pi -> Pico 바이트 비트 뒤집힘 (W5500<->Pico SPI 잡음에 해당)
+ *   fault tcp_rx_drop <ppm>   Pi -> Pico 바이트 유실
+ *   fault tcp_tx_flip <ppm>   Pico -> Pi 바이트 비트 뒤집힘
+ *   fault stall <ms>          core0/core1 이 ms 동안 멈춤 (긴 인터럽트, 플래시 쓰기 등)
+ * 처리 결과는 "fault ok <명령>" / "fault unknown <명령>" 으로 출력.
  */
 #define _POSIX_C_SOURCE 200809L
 #include <arpa/inet.h>
@@ -26,16 +34,41 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "diag.h"
 #include "fw_config.h"
 #include "session.h"
 #ifdef FW_SIM_REAL_ACTUATORS
 #include "actuators.h"
+bool hal_fault(const char *line); /* host/hal_stub.c */
 #endif
 
 static const fw_actuator_t ACTS[FW_N_ACT] = FW_ACTUATORS_INIT;
 static int32_t pos[FW_N_ACT];
 static uint32_t enabled;
 static int client = -1;
+
+static uint32_t f_rx_flip, f_rx_drop, f_tx_flip;
+static uint64_t f_rng = 0x2545F4914F6CDD1Dull;
+static bool f_chance(uint32_t ppm) {
+    if (!ppm)
+        return false;
+    f_rng ^= f_rng << 13;
+    f_rng ^= f_rng >> 7;
+    f_rng ^= f_rng << 17;
+    return (uint32_t)(f_rng >> 16) % 1000000u < ppm;
+}
+static uint16_t corrupt(uint8_t *d, uint16_t n, uint32_t flip_ppm, uint32_t drop_ppm) {
+    uint16_t o = 0;
+    for (uint16_t i = 0; i < n; i++) {
+        if (f_chance(drop_ppm))
+            continue;
+        uint8_t b = d[i];
+        if (f_chance(flip_ppm))
+            b ^= (uint8_t)(1u << (f_rng % 8));
+        d[o++] = b;
+    }
+    return o;
+}
 
 static uint64_t now_us64(void) {
     struct timespec ts;
@@ -51,8 +84,12 @@ static void io_send(void *ctx, const uint8_t *data, uint16_t len) {
         printf("%02x", data[i]);
     printf("\n");
 #endif
-    if (client >= 0)
-        (void)!send(client, data, len, MSG_NOSIGNAL);
+    if (client >= 0) {
+        uint8_t tmp[PROTO_MAX_FRAME];
+        memcpy(tmp, data, len);
+        corrupt(tmp, len, f_tx_flip, 0);
+        (void)!send(client, tmp, len, MSG_NOSIGNAL);
+    }
 }
 static void io_apply(void *ctx, const int32_t *t, uint32_t mask) {
     (void)ctx;
@@ -81,6 +118,8 @@ static bool io_read_state(void *ctx, proto_axis_state_t *out, uint8_t n) {
         if (i < FW_N_ACT) {
             out[i].position = pos[i];
             out[i].temperature_c10 = ACTS[i].kind == FW_ACT_STS ? 300 : 0;
+            if (enabled & (1u << i))
+                out[i].flags = AX_TORQUE_ON;
         }
     }
     return false;
@@ -106,11 +145,14 @@ int main(int argc, char **argv) {
     fflush(stdout);
 
     static session_t sess;
-    const session_cfg_t cfg = {ACTS, FW_N_ACT, FW_N_STS, FW_N_PWM, FW_VERSION, 0,
-                               FW_DEFAULT_CMD_TIMEOUT_MS, FW_MIN_CMD_TIMEOUT_MS, FW_MAX_CMD_TIMEOUT_MS};
+    const session_cfg_t cfg = {ACTS, FW_N_ACT, FW_N_STS, FW_N_PWM, FW_VERSION,
+                               CAP_STATE_EXT | CAP_DIAG | CAP_CMD_SEQ_ECHO,
+                               FW_DEFAULT_CMD_TIMEOUT_MS, FW_MIN_CMD_TIMEOUT_MS, FW_MAX_CMD_TIMEOUT_MS,
+                               FW_R_LINK_DIAG_PERIOD_MS, FW_R_LINK_DEGRADE_HOLD_MS, FW_R_LINK_CMD_JITTER_WARN_MS};
     const session_io_t io = {NULL, io_send, io_apply, io_release, io_read_state};
     session_init(&sess, &cfg, &io);
     uint32_t last_rx_ms = 0;
+    g_diag[DIAG_RESET_CAUSE] = 0x10000u; /* POR */
     uint8_t buf[2048];
 #ifdef FW_SIM_REAL_ACTUATORS
     actuators_setup();
@@ -118,11 +160,48 @@ int main(int argc, char **argv) {
     uint64_t next_step = now_us64();
 #endif
 
+    bool stdin_open = true;
+    char line[256];
+    size_t line_len = 0;
     for (;;) {
-        struct pollfd fds[2] = {{srv, POLLIN, 0}, {client, POLLIN, 0}};
-        poll(fds, client >= 0 ? 2 : 1, 1);
+        struct pollfd fds[3] = {{srv, POLLIN, 0}, {stdin_open ? 0 : -1, POLLIN, 0}, {client, POLLIN, 0}};
+        poll(fds, client >= 0 ? 3 : 2, 1);
+        if (fds[1].revents & POLLIN) { /* 고장 주입 명령 */
+            char c;
+            ssize_t r;
+            while ((r = read(0, &c, 1)) == 1) {
+                if (c != '\n') {
+                    if (line_len < sizeof line - 1)
+                        line[line_len++] = c;
+                    continue;
+                }
+                line[line_len] = 0;
+                line_len = 0;
+                const char *cmd = strncmp(line, "fault ", 6) == 0 ? line + 6 : line;
+                long v = 0;
+                char name[32] = "";
+                sscanf(cmd, "%31s %ld", name, &v);
+                bool ok = true;
+                if (!strcmp(name, "tcp_rx_flip")) f_rx_flip = (uint32_t)v;
+                else if (!strcmp(name, "tcp_rx_drop")) f_rx_drop = (uint32_t)v;
+                else if (!strcmp(name, "tcp_tx_flip")) f_tx_flip = (uint32_t)v;
+                else if (!strcmp(name, "stall")) nanosleep(&(struct timespec){v / 1000, (v % 1000) * 1000000L}, NULL);
+#ifdef FW_SIM_REAL_ACTUATORS
+                else ok = hal_fault(cmd);
+#else
+                else ok = false;
+#endif
+                printf("fault %s %s\n", ok ? "ok" : "unknown", cmd);
+                fflush(stdout);
+                break; /* 한 번에 한 줄: 나머지는 다음 poll 에서 */
+            }
+            if (r <= 0)
+                stdin_open = false; /* EOF: 더 이상 보지 않는다 */
+        }
+        fds[1] = fds[2];
         uint64_t t = now_us64();
         uint32_t now_ms = (uint32_t)(t / 1000), now_us = (uint32_t)t;
+        g_diag[DIAG_UPTIME_MS] = now_ms;
         if (fds[0].revents & POLLIN) {
             int c = accept(srv, NULL, NULL);
             if (c >= 0) {
@@ -145,7 +224,8 @@ int main(int argc, char **argv) {
                 client = -1;
             } else {
                 last_rx_ms = now_ms;
-                session_feed(&sess, buf, (uint16_t)n, now_ms, now_us);
+                uint16_t m = corrupt(buf, (uint16_t)n, f_rx_flip, f_rx_drop);
+                session_feed(&sess, buf, m, now_ms, now_us);
             }
         }
         if (client >= 0 && now_ms - last_rx_ms > FW_NET_LINK_IDLE_MS) {

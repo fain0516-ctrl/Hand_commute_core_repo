@@ -24,3 +24,8 @@ bool w5500_send(const uint8_t *data, uint16_t len);
 /* 활성 연결을 끊는다 (링크 유휴 타임아웃 등). */
 void w5500_drop_active(void);
 bool w5500_has_client(void);
+/* 주기 건강 검사 (VERSIONR, SIPR/SHAR 재확인, 소켓 상태). 연속 실패가 한계에 닿으면 false -> 재초기화 */
+bool w5500_health_check(void);
+/* 재초기화 직전에 호출: 횟수를 세고 필요하면 SPI 클럭을 낮춘다 */
+void w5500_note_reinit(void);
+uint32_t w5500_spi_baud(void);

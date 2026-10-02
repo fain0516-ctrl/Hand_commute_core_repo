@@ -1,5 +1,6 @@
 #include "sts_bus.h"
 
+#include "diag.h"
 #include "fw_config.h"
 #include "hardware/gpio.h"
 #include "hardware/uart.h"
@@ -33,22 +34,46 @@ static void set_dir_tx(bool tx) {
 #endif
 }
 
-/* 패킷 송신. TX/RX 를 묶은 회로면 자기 송신이 RX 로 돌아오므로 그만큼 읽어 버린다. */
-static void send_packet(const uint8_t *pkt, uint16_t len) {
+/*
+ * 패킷 송신. TX/RX 를 묶은 회로(echo)면 자기 송신이 RX 로 돌아오므로 읽어서 보낸 것과 비교한다.
+ * 다르면 선로 잡음이나 다른 장치와의 충돌이므로 false (호출 측이 재전송).
+ * 방향 제어 회로(echo 없음)에서는 확인할 수 없으므로 항상 true.
+ */
+static bool send_packet(const uint8_t *pkt, uint16_t len) {
     drain_rx();
     set_dir_tx(true);
     uart_write_blocking(UART_INST, pkt, len);
     uart_tx_wait_blocking(UART_INST);
     set_dir_tx(false);
+    bool ok = true;
 #if FW_STS_ECHO
     absolute_time_t until = make_timeout_time_us(200 + (uint64_t)len * 20000000ull / FW_STS_BAUD);
     uint8_t c;
-    for (uint16_t i = 0; i < len && getc_timeout(&c, until); i++) {
+    for (uint16_t i = 0; i < len; i++) {
+        if (!getc_timeout(&c, until)) {
+            ok = false; /* 에코가 덜 돌아옴: 선로 단선/잡음 */
+            break;
+        }
+        if (c != pkt[i])
+            ok = false; /* 끝까지 읽어 응답과 섞이지 않게 한다 */
     }
+    if (!ok)
+        diag_inc(DIAG_BUS_ECHO_ERRORS);
 #endif
 #if FW_STS_RETURN_DELAY_US > 0
     sleep_us(FW_STS_RETURN_DELAY_US);
 #endif
+    return ok;
+}
+
+/* 응답 없는 패킷: 에코가 틀리면 write_retries 번까지 다시 보낸다 */
+static void send_reliable(const uint8_t *pkt, uint16_t len) {
+    for (int attempt = 0; attempt <= FW_R_SERVO_BUS_WRITE_RETRIES; attempt++) {
+        if (attempt)
+            diag_inc(DIAG_BUS_RETRIES);
+        if (send_packet(pkt, len))
+            return;
+    }
 }
 
 static uint8_t checksum(const uint8_t *p, uint16_t from, uint16_t to) {
@@ -91,7 +116,7 @@ void sts_write(uint8_t id, uint8_t addr, const uint8_t *data, uint8_t len) {
     for (uint8_t i = 0; i < len; i++)
         pkt[n++] = data[i];
     pkt[n] = checksum(pkt, 2, n);
-    send_packet(pkt, (uint16_t)(n + 1));
+    send_reliable(pkt, (uint16_t)(n + 1));
 }
 
 void sts_sync_write(uint8_t addr, uint8_t len, const uint8_t *ids, const uint8_t *data, uint8_t count) {
@@ -112,18 +137,19 @@ void sts_sync_write(uint8_t addr, uint8_t len, const uint8_t *ids, const uint8_t
             pkt[n++] = data[i * len + j];
     }
     pkt[n] = checksum(pkt, 2, n);
-    send_packet(pkt, (uint16_t)(n + 1));
+    send_reliable(pkt, (uint16_t)(n + 1));
 }
 
-sts_result_t sts_read(uint8_t id, uint8_t addr, uint8_t len, uint8_t *out, uint8_t *servo_error) {
+/* 1회 읽기 시도. 응답: FF FF ID LEN ERR DATA... CHK */
+static sts_result_t read_once(uint8_t id, uint8_t addr, uint8_t len, uint8_t *out, uint8_t *servo_error) {
     uint8_t pkt[8] = {0xFF, 0xFF, id, 4, INST_READ, addr, len, 0};
     pkt[7] = checksum(pkt, 2, 7);
-    send_packet(pkt, 8);
+    if (!send_packet(pkt, 8))
+        return STS_BAD_PACKET; /* 요청 자체가 깨져 나갔다: 응답을 믿을 수 없다 */
 
-    /* 응답: FF FF ID LEN ERR DATA... CHK */
     absolute_time_t until = make_timeout_time_us(FW_STS_RESPONSE_TIMEOUT_US);
     uint8_t c, prev = 0;
-    for (;;) { /* 헤더 동기화 */
+    for (;;) { /* 헤더 동기화: 잡음 바이트는 건너뛴다 */
         if (!getc_timeout(&c, until))
             return STS_TIMEOUT;
         if (prev == 0xFF && c == 0xFF)
@@ -131,7 +157,11 @@ sts_result_t sts_read(uint8_t id, uint8_t addr, uint8_t len, uint8_t *out, uint8
         prev = c;
     }
     uint8_t hdr[3];
-    for (int i = 0; i < 3; i++) {
+    do { /* FF FF 뒤에 FF 가 더 붙어 있으면 (잡음/앞 패킷 꼬리) 건너뛴다 */
+        if (!getc_timeout(&hdr[0], until))
+            return STS_TIMEOUT;
+    } while (hdr[0] == 0xFF);
+    for (int i = 1; i < 3; i++) {
         if (!getc_timeout(&hdr[i], until))
             return STS_TIMEOUT;
     }
@@ -149,4 +179,17 @@ sts_result_t sts_read(uint8_t id, uint8_t addr, uint8_t len, uint8_t *out, uint8
         return STS_BAD_PACKET;
     *servo_error = hdr[2];
     return STS_OK;
+}
+
+sts_result_t sts_read(uint8_t id, uint8_t addr, uint8_t len, uint8_t *out, uint8_t *servo_error) {
+    sts_result_t r = STS_TIMEOUT;
+    for (int attempt = 0; attempt <= FW_R_SERVO_BUS_READ_RETRIES; attempt++) {
+        if (attempt)
+            diag_inc(DIAG_BUS_RETRIES);
+        r = read_once(id, addr, len, out, servo_error);
+        if (r == STS_OK)
+            return r;
+        diag_inc(r == STS_TIMEOUT ? DIAG_BUS_TIMEOUTS : DIAG_BUS_BAD_PACKETS);
+    }
+    return r;
 }

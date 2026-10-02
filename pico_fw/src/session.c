@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "diag.h"
+
 static uint32_t all_mask(const session_t *s) {
     return s->cfg.n_act >= 32 ? 0xFFFFFFFFu : ((1u << s->cfg.n_act) - 1u);
 }
@@ -40,26 +42,49 @@ static void release_all(session_t *s) {
     release(s, all_mask(s));
 }
 
-static void send_state(session_t *s) {
-    static proto_axis_state_t ax[PROTO_MAX_ACTUATORS];
-    uint8_t n = s->cfg.n_act;
-    bool fault = s->io.read_state(s->io.ctx, ax, n);
+/* 일시적 이상(seq gap, 지령 지터)을 degrade_hold_ms 동안 DEGRADED 로 유지 */
+static void mark_degraded(session_t *s) {
+    s->had_gap = true;
+    s->last_gap_ms = s->now_ms;
+}
+
+static uint16_t compute_status(session_t *s, const proto_axis_state_t *ax, uint8_t n, bool fault) {
     uint16_t status = s->status & (ST_WATCHDOG | ST_ESTOP | ST_HELLO_DONE);
     if (s->enabled_mask)
         status |= ST_TORQUE_ENABLED;
     if (fault)
         status |= ST_BUS_FAULT;
+    uint8_t level = LEVEL_OK;
+    for (uint8_t i = 0; i < n; i++)
+        if (ax[i].level > level)
+            level = ax[i].level;
+    if (s->had_gap && (uint32_t)(s->now_ms - s->last_gap_ms) < s->cfg.degrade_hold_ms) {
+        status |= ST_SEQ_GAP;
+        if (level < LEVEL_DEGRADED)
+            level = LEVEL_DEGRADED;
+    }
+    if (status & (ST_WATCHDOG | ST_ESTOP))
+        level = LEVEL_SAFE_OFF;
+    s->level = level;
+    g_diag[DIAG_FAULT_LEVEL] = level;
+    return (uint16_t)(status | (level << ST_LEVEL_SHIFT));
+}
+
+static void send_state(session_t *s) {
+    static proto_axis_state_t ax[PROTO_MAX_ACTUATORS];
+    uint8_t n = s->cfg.n_act;
+    bool fault = s->io.read_state(s->io.ctx, ax, n);
+    uint16_t status = compute_status(s, ax, n, fault);
 
     uint8_t *p = s->txbuf + PROTO_HEADER_SIZE; /* payload 를 송신 버퍼에 바로 만든다 */
     put_u16(p, status);
     put_u16(p + 2, s->last_error);
     p[4] = n;
-    p[5] = p[6] = p[7] = 0;
-    uint8_t *q = p + 8;
+    p[5] = PROTO_AXIS_STATE_SIZE;
+    put_u16(p + 6, s->last_cmd_seq);
+    uint8_t *q = p + PROTO_STATE_HEAD_SIZE;
     for (uint8_t i = 0; i < n; i++, q += PROTO_AXIS_STATE_SIZE) {
-        uint16_t fl = ax[i].flags;
-        if (s->enabled_mask & (1u << i))
-            fl |= AX_TORQUE_ON;
+        uint16_t fl = ax[i].flags; /* AX_TORQUE_ON 은 액추에이터 쪽 실제 상태 (보호/피드백 끊김 해제 반영) */
         if (s->clamp_mask & (1u << i))
             fl |= AX_CLAMPED;
         put_u32(q, (uint32_t)ax[i].position);
@@ -67,8 +92,32 @@ static void send_state(session_t *s) {
         put_u32(q + 8, (uint32_t)ax[i].effort);
         put_u16(q + 12, (uint16_t)ax[i].temperature_c10);
         put_u16(q + 14, fl);
+        put_u16(q + 16, ax[i].age_ms);
+        q[18] = ax[i].voltage_dv;
+        q[19] = ax[i].level;
+        q[20] = q[21] = q[22] = q[23] = 0;
     }
-    send_frame(s, MSG_STATE, 0, p, (uint16_t)(8 + n * PROTO_AXIS_STATE_SIZE));
+    send_frame(s, MSG_STATE, 0, p, (uint16_t)(PROTO_STATE_HEAD_SIZE + n * PROTO_AXIS_STATE_SIZE));
+}
+
+static void send_diag(session_t *s) {
+    uint8_t p[4 + 4 * DIAG_COUNT];
+    p[0] = DIAG_COUNT;
+    p[1] = p[2] = p[3] = 0;
+    g_diag[DIAG_RX_FRAMES] = s->rx_frames;
+    g_diag[DIAG_CRC_ERRORS] = s->dec.crc_errors;
+    g_diag[DIAG_DROPPED_BYTES] = s->dec.dropped_bytes;
+    g_diag[DIAG_WATCHDOG_TRIPS] = s->watchdog_trips;
+    g_diag[DIAG_ESTOPS] = s->estops;
+    g_diag[DIAG_CMD_INTERVAL_MEAN_US] = s->interval_n ? (uint32_t)(s->interval_sum_us / s->interval_n) : 0;
+    for (int i = 0; i < DIAG_COUNT; i++)
+        put_u32(p + 4 + 4 * i, g_diag[i]);
+    send_frame(s, MSG_DIAG, 0, p, sizeof p);
+    /* 구간 통계는 보고 후 초기화 (누적 카운터는 유지) */
+    g_diag[DIAG_CMD_INTERVAL_MAX_US] = 0;
+    g_diag[DIAG_LOOP_MAX_US] = 0;
+    s->interval_sum_us = 0;
+    s->interval_n = 0;
 }
 
 static void handle_hello(session_t *s, const proto_frame_t *f) {
@@ -89,6 +138,21 @@ static void handle_hello(session_t *s, const proto_frame_t *f) {
     p[3] = s->cfg.n_pwm;
     put_u32(p + 4, s->cfg.capabilities);
     send_frame(s, MSG_HELLO_ACK, 0, p, sizeof p);
+    if (s->cfg.diag_period_ms)
+        send_diag(s); /* 연결 직후 리셋 원인 등을 바로 알린다 */
+}
+
+static void track_cmd_interval(session_t *s) {
+    if (s->have_cmd_us) {
+        uint32_t dt = s->now_us - s->last_cmd_us;
+        diag_max(DIAG_CMD_INTERVAL_MAX_US, dt);
+        s->interval_sum_us += dt;
+        s->interval_n++;
+        if (dt > (uint32_t)s->cfg.cmd_jitter_warn_ms * 1000u)
+            mark_degraded(s);
+    }
+    s->last_cmd_us = s->now_us;
+    s->have_cmd_us = true;
 }
 
 static void handle_cmd(session_t *s, const proto_frame_t *f) {
@@ -104,6 +168,8 @@ static void handle_cmd(session_t *s, const proto_frame_t *f) {
     }
     s->cmds++;
     s->last_cmd_ms = s->now_ms;
+    s->last_cmd_seq = f->seq;
+    track_cmd_interval(s);
     if (count != s->cfg.n_act)
         send_error(s, ERR_COUNT_MISMATCH, "actuator count differs from firmware config");
     uint8_t n = count < s->cfg.n_act ? count : s->cfg.n_act;
@@ -152,6 +218,13 @@ static void handle_cmd(session_t *s, const proto_frame_t *f) {
 static void on_frame(void *ctx, const proto_frame_t *f) {
     session_t *s = ctx;
     s->rx_frames++;
+    /* Pi 는 모든 프레임에 seq 를 1씩 붙인다. 건너뛰면 그 사이 프레임이 CRC 오류로 버려진 것 */
+    if (s->have_rx_seq && f->seq != (uint16_t)(s->last_rx_seq + 1)) {
+        diag_inc(DIAG_SEQ_GAPS);
+        mark_degraded(s);
+    }
+    s->have_rx_seq = true;
+    s->last_rx_seq = f->seq;
     switch (f->msg_type) {
     case MSG_HELLO:
         handle_hello(s, f);
@@ -185,12 +258,17 @@ void session_on_connect(session_t *s, uint32_t now_ms) {
     s->connected = true;
     s->now_ms = now_ms;
     s->last_cmd_ms = now_ms;
+    s->last_diag_ms = now_ms;
     s->error_sent_mask = 0;
     s->cmd_timeout_ms = s->cfg.default_timeout_ms;
     s->status &= (uint16_t)~ST_HELLO_DONE;
+    s->have_rx_seq = false;
+    s->have_cmd_us = false;
 }
 
 void session_on_disconnect(session_t *s) {
+    if (s->connected)
+        diag_inc(DIAG_LINK_DROPS);
     s->connected = false;
     release_all(s);
 }
@@ -207,5 +285,9 @@ void session_tick(session_t *s, uint32_t now_ms) {
         release_all(s);
         s->status |= ST_WATCHDOG;
         s->watchdog_trips++;
+    }
+    if (s->connected && s->cfg.diag_period_ms && (uint32_t)(now_ms - s->last_diag_ms) >= s->cfg.diag_period_ms) {
+        s->last_diag_ms = now_ms;
+        send_diag(s);
     }
 }

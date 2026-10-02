@@ -3,12 +3,15 @@
 1. tools/gen_config.py: 두 보드 설정이 생성되고, 잘못된 핀/키는 거부되는지
 2. 펌웨어의 proto.c + session.c 를 호스트용으로 컴파일한 시뮬레이터(pico_fw/host/sim_main.c)에
    Pi 쪽 comm_core.PicoLink 를 붙여 실제 프로토콜로 주고받는지
+3. 펌웨어 C 헤더와 comm_core/protocol.py 의 상수(DIAG 필드 순서, STATE 비트)가 같은지
+4. 고장 주입 시험(host/fault_check.py, host/w5500_fault_test.c)이 모두 기대대로인지
 
 gcc 가 없으면 2 는 건너뛴다.
 """
 
 import copy
 import dataclasses
+import re
 import os
 import shutil
 import socket
@@ -23,6 +26,7 @@ import yaml
 
 from comm_core.config import load_config
 from comm_core.pico_link import PicoLink
+from comm_core import protocol
 from comm_core.protocol import CmdMode, Frame, FrameDecoder, Hello, HelloAck, MsgType, encode_frame
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -126,6 +130,7 @@ class FirmwareSimTest(unittest.TestCase):
         assert r.returncode == 0, r.stderr
         cls.bin = os.path.join(cls.tmp, "fw_sim")
         src = [os.path.join(FW, "src", "proto.c"), os.path.join(FW, "src", "session.c"),
+               os.path.join(FW, "src", "diag.c"),
                os.path.join(FW, "host", "sim_main.c")]
         subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-I", os.path.join(FW, "src"),
                         "-I", cls.tmp, *src, "-o", cls.bin], check=True)
@@ -249,14 +254,12 @@ class FirmwareSimTest(unittest.TestCase):
         dec, frames = FrameDecoder(), []
         s.settimeout(1.0)
         while not frames:
-            frames += dec.feed(s.recv(4096))
-        self.assertEqual(len(frames), 1)
+            frames += [f for f in dec.feed(s.recv(4096)) if f.msg_type == MsgType.HELLO_ACK]
+        self.assertEqual(len(frames), 1)  # 깨진 HELLO 에는 응답하지 않음 (HELLO_ACK 뒤 DIAG 는 별개)
         self.assertEqual(HelloAck.unpack(frames[0].payload).n_sts, 6)
         s.close()
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 @unittest.skipUnless(shutil.which("gcc"), "gcc 없음")
@@ -272,10 +275,72 @@ class PipelineCheckTest(unittest.TestCase):
                 report = f.read()
         sections = {s.split("\n", 1)[0]: s for s in report.split("\n## ")}
         pos = sections["2 position"]
-        self.assertIn("SYNC_WRITE GOAL_POSITION+TIME+SPEED: `{1:2374, 2:2309, 3:2244, 4:2178, 5:2113, 6:1983}`", pos)
+        # 변화율 제한으로 여러 주기에 나눠 쓰지만 최종 측정 위치는 지령과 같다
+        self.assertIn("pos=[2374, 2309, 2244, 2178, 2113, 1983, 1500, 1627, 1755, 1373]", pos)
+        self.assertIn("SYNC_WRITE GOAL_POSITION+TIME+SPEED", pos)
         self.assertIn("GPIO6=1500us, GPIO7=1627us, GPIO8=1755us, GPIO9=1373us", pos)
         self.assertIn("ERROR x1", sections["4 torque != 0"])
         self.assertIn("GPIO6=0us", sections["6 torque = 0"])
-        lat = sections["9 position 후 Pi 루프 정지"].split("쓰기 후 ")[1].split(" ms")[0]
+        lat = sections["9 position 후 Pi 루프 정지"].split("응답(STATE) 후 ")[1].split(" ms")[0]
         self.assertTrue(80 <= int(lat) <= 160, lat)   # Pico 자체 워치독 (cmd_timeout 100 ms)
         self.assertIn("토크 해제", sections["10 position 중 Pi 종료"])
+
+
+class ConstantsMatchTest(unittest.TestCase):
+    """펌웨어와 Pi 가 같은 번호를 쓰는지 (한쪽만 고치면 실패)."""
+
+    def read(self, name):
+        with open(os.path.join(FW, "src", name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_diag_fields(self):
+        names = re.findall(r"X\((\w+)\)", self.read("proto.h").split("#define DIAG_FIELDS(X)")[1].split("\n\n")[0])
+        self.assertEqual([n.lower() for n in names], protocol.DIAG_FIELDS)
+
+    def test_state_bits(self):
+        src = self.read("session.h")
+        for prefix in ("AX_", "ST_"):
+            defs = dict(re.findall(rf"#define ({prefix}\w+) (0x[0-9A-Fa-f]+|\d+)", src))
+            self.assertTrue(defs)
+            for name, val in defs.items():
+                self.assertEqual(getattr(protocol, name), int(val, 0), name)
+
+    def test_caps_and_sizes(self):
+        src = self.read("proto.h")
+        for name in ("CAP_STATE_EXT", "CAP_DIAG", "CAP_CMD_SEQ_ECHO"):
+            self.assertEqual(int(re.search(rf"#define {name} (\w+)", src).group(1), 0), getattr(protocol, name))
+        self.assertEqual(int(re.search(r"#define PROTO_AXIS_STATE_SIZE (\d+)", src).group(1)),
+                         protocol.ActuatorState.EXT.size)
+        self.assertEqual(int(re.search(r"#define PROTO_STATE_HEAD_SIZE (\d+)", src).group(1)), protocol.State.HEAD.size)
+
+
+@unittest.skipUnless(shutil.which("gcc"), "gcc 없음")
+class FaultInjectionTest(unittest.TestCase):
+    """잡음/누락/관측 불가 고장 주입: 모든 시나리오가 기대대로 검출/대응/복구되는지."""
+
+    def test_fault_scenarios(self):
+        r = subprocess.run([sys.executable, os.path.join(FW, "host", "fault_check.py")],
+                           capture_output=True, text=True, timeout=180, cwd=ROOT)
+        table = [line for line in r.stdout.splitlines() if line.startswith("| ") and "실패" in line]
+        self.assertEqual(r.returncode, 0, "\n".join(table) or r.stderr[-2000:])
+
+    def test_robustness_typo_rejected(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            with open(CONTROLLER, encoding="utf-8") as f:
+                c = yaml.safe_load(f)
+            for k in ("comm_core", "hand_model"):  # 상대경로 유지
+                c["shared"][k] = os.path.join(os.path.dirname(CONTROLLER), c["shared"][k])
+            c["robustness"]["feedback"]["stale_msec"] = c["robustness"]["feedback"].pop("stale_ms")
+            path = os.path.join(tmp, "c.yaml")
+            with open(path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(c, f)
+            r = gen(path, os.path.join(BOARDS, "pico2_w5500.yaml"), tmp)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("stale", r.stderr)
+        finally:
+            shutil.rmtree(tmp)
+
+
+if __name__ == "__main__":
+    unittest.main()

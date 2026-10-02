@@ -43,7 +43,7 @@ def build_sim(board: str, tmp: str) -> str:
                     "--config", os.path.join(FW, "config", "controller.yaml"),
                     "--board", os.path.join(FW, "config", "boards", board + ".yaml"), "--out", tmp], check=True)
     out = os.path.join(tmp, "fw_sim_real")
-    src = ["proto.c", "session.c", "actuators.c", "sts_bus.c"]
+    src = ["proto.c", "session.c", "actuators.c", "sts_bus.c", "diag.c"]
     subprocess.run(["gcc", "-std=c11", "-O1", "-DFW_SIM_REAL_ACTUATORS",
                     "-I", os.path.join(FW, "host", "sdk_stub"), "-I", os.path.join(FW, "src"), "-I", tmp,
                     *[os.path.join(FW, "src", s) for s in src],
@@ -126,16 +126,18 @@ def summarize(events) -> dict:
 
 
 def release_latency(events):
-    """창 안에서 마지막 목표 위치 쓰기 -> 그 뒤 첫 토크 해제 패킷까지 걸린 시간 (ms)."""
-    last_goal = None
+    """창 안에서 마지막 지령 응답(STATE) -> 그 뒤 첫 토크 해제 패킷까지 걸린 시간 (ms).
+    (변화율 제한 때문에 마지막 GOAL 쓰기는 마지막 지령보다 이를 수 있어 지령 응답을 기준으로 잰다)"""
+    last_cmd = None
+    dec = FrameDecoder()
     for ms, kind, payload in events:
-        if kind != "bus":
-            continue
-        ins, addr, items = classify_bus(payload)
-        if ins == "SYNC_WRITE" and addr.startswith("GOAL"):
-            last_goal = ms
-        elif last_goal is not None and ins == "SYNC_WRITE" and addr == "TORQUE_ENABLE" and ":0" in items:
-            return ms - last_goal
+        if kind == "tcp":
+            if any(f.msg_type == MsgType.STATE for f in dec.feed(bytes.fromhex(payload))):
+                last_cmd = ms
+        elif kind == "bus" and last_cmd is not None:
+            ins, addr, items = classify_bus(payload)
+            if ins == "SYNC_WRITE" and addr == "TORQUE_ENABLE" and ":0" in items:
+                return ms - last_cmd
     return None
 
 
@@ -254,7 +256,7 @@ def main() -> int:
             lines.append("- 서보 버스: 없음")
         lat = release_latency(log.window(t0, t1))
         if lat is not None:
-            lines.append(f"- 토크 해제: 마지막 GOAL_POSITION 쓰기 후 {lat} ms 에 TORQUE_ENABLE=0 + PWM 0 us")
+            lines.append(f"- 토크 해제: 마지막 지령 응답(STATE) 후 {lat} ms 에 TORQUE_ENABLE=0 + PWM 0 us")
         if s["pwm"]:
             lines.append("- PWM: " + ", ".join(f"GPIO{p}={us}us" for _, p, us in s["pwm"]))
         else:

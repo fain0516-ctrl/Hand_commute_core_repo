@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "diag.h"
 #include "fw_config.h"
 #include "hardware/gpio.h"
 #include "hardware/spi.h"
@@ -96,15 +97,26 @@ static uint16_t rd16(uint16_t a, uint8_t bsb) {
     xfer_read(a, bsb, b, 2);
     return (uint16_t)((b[0] << 8) | b[1]);
 }
-/* 칩이 갱신 중인 16비트 레지스터는 두 번 같은 값이 나올 때까지 읽는다 (데이터시트 권고) */
-static uint16_t rd16_stable(uint16_t a, uint8_t bsb) {
+/* 칩이 갱신 중인 16비트 레지스터는 두 번 같은 값이 나올 때까지 읽는다 (데이터시트 권고).
+ * SPI 잡음으로 계속 다르게 읽히면 무한 루프가 되므로 횟수를 제한하고 SPI 오류로 센다. */
+static bool rd16_stable(uint16_t a, uint8_t bsb, uint16_t *out) {
     uint16_t v1, v2 = rd16(a, bsb);
-    do {
+    for (int i = 0; i < 4; i++) {
         v1 = v2;
         v2 = rd16(a, bsb);
-    } while (v1 != v2);
-    return v1;
+        if (v1 == v2) {
+            *out = v1;
+            return true;
+        }
+    }
+    diag_inc(DIAG_SPI_ERRORS);
+    return false;
 }
+
+static uint32_t spi_baud = FW_W5500_BAUD_HZ;
+static uint32_t reinit_count;
+static uint8_t health_fails;
+static uint16_t buf_bytes = (uint16_t)(FW_NET_SOCKET_BUF_KB * 1024u);
 
 static void sock_cmd(uint8_t s, uint8_t cmd) {
     wr8(Sn_CR, BSB_SREG(s), cmd);
@@ -136,8 +148,23 @@ static void sock_close_and_relisten(uint8_t s) {
     sock_listen(s);
 }
 
+static const uint8_t cfg_mac[6] = FW_NET_MAC, cfg_ip[4] = FW_NET_IP, cfg_mask[4] = FW_NET_NETMASK,
+                     cfg_gw[4] = FW_NET_GATEWAY;
+
+/* 설정 레지스터를 쓰고 다시 읽어 확인 (SPI 비트 오류 검출) */
+static bool write_verify(uint16_t addr, const uint8_t *v, uint16_t len) {
+    uint8_t rb[8];
+    xfer_write(addr, BSB_COMMON, v, len);
+    xfer_read(addr, BSB_COMMON, rb, len);
+    if (memcmp(rb, v, len) == 0)
+        return true;
+    diag_inc(DIAG_SPI_ERRORS);
+    return false;
+}
+
 bool w5500_init(void) {
-    spi_init(SPI_INST, FW_W5500_BAUD_HZ);
+    health_fails = 0;
+    spi_init(SPI_INST, spi_baud);
     spi_set_format(SPI_INST, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
     gpio_set_function(FW_W5500_PIN_SCK, GPIO_FUNC_SPI);
     gpio_set_function(FW_W5500_PIN_MOSI, GPIO_FUNC_SPI);
@@ -163,11 +190,9 @@ bool w5500_init(void) {
     if (rd8(VERSIONR, BSB_COMMON) != W5500_VERSION)
         return false;
 
-    static const uint8_t mac[6] = FW_NET_MAC, ip[4] = FW_NET_IP, mask[4] = FW_NET_NETMASK, gw[4] = FW_NET_GATEWAY;
-    xfer_write(SHAR, BSB_COMMON, mac, 6);
-    xfer_write(SIPR, BSB_COMMON, ip, 4);
-    xfer_write(SUBR, BSB_COMMON, mask, 4);
-    xfer_write(GAR, BSB_COMMON, gw, 4);
+    if (!write_verify(SHAR, cfg_mac, 6) || !write_verify(SIPR, cfg_ip, 4) || !write_verify(SUBR, cfg_mask, 4) ||
+        !write_verify(GAR, cfg_gw, 4))
+        return false;
     wr16(RTR, BSB_COMMON, FW_NET_RETRY_TIME_100US);
     wr8(RCR, BSB_COMMON, FW_NET_RETRY_COUNT);
 
@@ -198,9 +223,14 @@ void w5500_drop_active(void) {
 }
 
 static uint16_t sock_recv(uint8_t s, uint8_t *buf, uint16_t cap) {
-    uint16_t avail = rd16_stable(Sn_RX_RSR, BSB_SREG(s));
-    if (!avail)
+    uint16_t avail;
+    if (!rd16_stable(Sn_RX_RSR, BSB_SREG(s), &avail) || !avail)
         return 0;
+    if (avail > buf_bytes) { /* 버퍼보다 큰 값: 잘못 읽힘. 다음 폴링에서 다시 */
+        diag_inc(DIAG_SPI_ERRORS);
+        health_fails++;
+        return 0;
+    }
     uint16_t n = avail < cap ? avail : cap;
     uint16_t rd = rd16(Sn_RX_RD, BSB_SREG(s));
     xfer_read(rd, BSB_SRX(s), buf, n); /* 버퍼 주소는 칩이 자동으로 순환시킨다 */
@@ -224,6 +254,8 @@ net_event_t w5500_poll(uint8_t *buf, uint16_t cap, uint16_t *len) {
             active = (int8_t)s;
             /* 끊김과 연결이 한 번에 생기면 연결을 알린다 (세션은 연결 시 초기화됨) */
             ev = NET_EV_CONNECTED;
+        } else if ((sr == SR_CLOSE_WAIT || sr == SR_CLOSED) && rd8(Sn_SR, BSB_SREG(s)) != sr) {
+            diag_inc(DIAG_SPI_ERRORS); /* 두 번 읽은 값이 다름: SPI 잡음. 연결을 끊지 않는다 */
         } else if (sr == SR_CLOSE_WAIT || sr == SR_CLOSED) {
             if (sr == SR_CLOSE_WAIT)
                 sock_cmd(s, CR_DISCON);
@@ -253,7 +285,8 @@ bool w5500_send(const uint8_t *data, uint16_t len) {
         wr8(Sn_IR, BSB_SREG(s), IR_SEND_OK);
         send_pending[s] = false;
     }
-    if (rd16_stable(Sn_TX_FSR, BSB_SREG(s)) < len)
+    uint16_t fsr;
+    if (!rd16_stable(Sn_TX_FSR, BSB_SREG(s), &fsr) || fsr > buf_bytes || fsr < len)
         return false;
     uint16_t wr = rd16(Sn_TX_WR, BSB_SREG(s));
     xfer_write(wr, BSB_STX(s), data, len);
@@ -261,4 +294,49 @@ bool w5500_send(const uint8_t *data, uint16_t len) {
     sock_cmd(s, CR_SEND);
     send_pending[s] = true;
     return true;
+}
+
+/* 소켓 상태 레지스터로 가능한 값 (데이터시트 Sn_SR) */
+static bool sr_known(uint8_t sr) {
+    switch (sr) {
+    case SR_CLOSED: case SR_INIT: case SR_LISTEN: case SR_ESTABLISHED: case SR_CLOSE_WAIT:
+    case 0x15: case 0x16: case 0x18: case 0x1A: case 0x1B: case 0x1D: /* SYNSENT/SYNRECV/FIN_WAIT/CLOSING/TIME_WAIT/LAST_ACK */
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * 주기 건강 검사: VERSIONR, 설정 레지스터(SIPR/SHAR) 를 읽어 비교하고 소켓 상태가 정의된 값인지 본다.
+ * 칩이 잡음/전압 강하로 리셋되면 설정이 0 으로 돌아가므로 여기서 잡힌다.
+ * 연속 실패가 robustness.w5500.fail_threshold 에 닿으면 false: 호출 측이 재초기화한다.
+ */
+bool w5500_health_check(void) {
+    uint8_t ip[4], mac[6];
+    bool ok = rd8(VERSIONR, BSB_COMMON) == W5500_VERSION;
+    xfer_read(SIPR, BSB_COMMON, ip, 4);
+    xfer_read(SHAR, BSB_COMMON, mac, 6);
+    ok = ok && memcmp(ip, cfg_ip, 4) == 0 && memcmp(mac, cfg_mac, 6) == 0;
+    for (uint8_t s = 0; ok && s < FW_NET_LISTEN_SOCKETS; s++)
+        ok = sr_known(rd8(Sn_SR, BSB_SREG(s)));
+    if (ok) {
+        if (health_fails)
+            health_fails--;
+        return true;
+    }
+    diag_inc(DIAG_SPI_ERRORS);
+    return ++health_fails < FW_R_W5500_FAIL_THRESHOLD;
+}
+
+/* 재초기화 횟수를 세고, fallback_after 번째부터는 낮은 SPI 클럭으로 (긴 배선/잡음 대비) */
+void w5500_note_reinit(void) {
+    diag_inc(DIAG_W5500_REINITS);
+    if (++reinit_count >= FW_R_W5500_FALLBACK_AFTER)
+        spi_baud = FW_R_W5500_FALLBACK_BAUD_HZ;
+    active = -1;
+}
+
+uint32_t w5500_spi_baud(void) {
+    return spi_baud;
 }

@@ -119,6 +119,7 @@ def parse_ip(path: str, s: str) -> List[int]:
 def build(config_path: str, board_path: str) -> Dict[str, Any]:
     cfg = take(load_yaml(config_path), "controller", {
         "fw_version": int, "shared": dict, "network": dict, "servo_bus": dict, "pwm": dict, "safety": dict,
+        "robustness": dict,
     })
     shared = take(cfg["shared"], "controller.shared", {"comm_core": str, "hand_model": str})
     comm_path = resolve(config_path, shared["comm_core"])
@@ -145,6 +146,50 @@ def build(config_path: str, board_path: str) -> Dict[str, Any]:
     })
     pwm = take(cfg["pwm"], "pwm", {"frequency_hz": int, "release_mode": str})
     safety = take(cfg["safety"], "safety", {"hw_watchdog_ms": int, "min_cmd_timeout_ms": int, "max_cmd_timeout_ms": int})
+
+    rob = take(cfg["robustness"], "robustness", {
+        "servo_bus": dict, "feedback": dict, "plausibility": dict, "protection": dict, "slew": dict,
+        "link": dict, "w5500": dict,
+    })
+    r = {
+        "servo_bus": take(rob["servo_bus"], "robustness.servo_bus", {
+            "read_retries": int, "write_retries": int, "verify_period_ms": int, "goal_tolerance_ticks": int,
+            "read_budget_us": int}),
+        "feedback": take(rob["feedback"], "robustness.feedback", {
+            "stale_ms": int, "lost_ms": int, "lost_action": str, "bus_dead_ms": int, "bus_dead_action": str,
+            "observer_tau_ms": int, "estimate_max_ms": int}),
+        "plausibility": take(rob["plausibility"], "robustness.plausibility", {
+            "max_speed_ticks_per_s": int, "jump_margin_ticks": int, "max_reject_streak": int,
+            "temp_valid_max_c": int, "voltage_valid_dv": list}),
+        "protection": take(rob["protection"], "robustness.protection", {
+            "temp_warn_c": int, "temp_off_c": int, "voltage_warn_dv": list, "load_warn_permille": int,
+            "load_off_permille": int, "protect_ms": int}),
+        "slew": take(rob["slew"], "robustness.slew", {"sts_ticks_per_s": int, "pwm_us_per_s": int}),
+        "link": take(rob["link"], "robustness.link", {
+            "diag_period_ms": int, "degrade_hold_ms": int, "cmd_jitter_warn_ms": int}),
+        "w5500": take(rob["w5500"], "robustness.w5500", {
+            "health_period_ms": int, "fail_threshold": int, "fallback_baud_hz": int, "fallback_after": int}),
+    }
+    fb = r["feedback"]
+    for k in ("lost_action", "bus_dead_action"):
+        if fb[k] not in ("hold", "torque_off"):
+            raise ConfigError(f"robustness.feedback.{k}: hold 또는 torque_off")
+    if not 0 < fb["stale_ms"] < fb["lost_ms"] <= 65000 or fb["bus_dead_ms"] < fb["lost_ms"]:
+        raise ConfigError("robustness.feedback: 0 < stale_ms < lost_ms <= bus_dead_ms 이어야 합니다")
+    for path, pair in (("plausibility.voltage_valid_dv", r["plausibility"]["voltage_valid_dv"]),
+                       ("protection.voltage_warn_dv", r["protection"]["voltage_warn_dv"])):
+        if len(pair) != 2 or not all(isinstance(x, int) for x in pair) or not 0 <= pair[0] < pair[1] <= 255:
+            raise ConfigError(f"robustness.{path}: [하한, 상한] (0~255, 0.1 V)")
+    pr = r["protection"]
+    if not pr["temp_warn_c"] <= pr["temp_off_c"] or not pr["load_warn_permille"] <= pr["load_off_permille"]:
+        raise ConfigError("robustness.protection: warn <= off 이어야 합니다")
+    for k in ("read_retries", "write_retries"):
+        rng(f"robustness.servo_bus.{k}", r["servo_bus"][k], 0, 5)
+    rng("robustness.servo_bus.read_budget_us", r["servo_bus"]["read_budget_us"], 0, 1_000_000)
+    rng("robustness.slew.sts_ticks_per_s", r["slew"]["sts_ticks_per_s"], 1, 1_000_000)
+    rng("robustness.slew.pwm_us_per_s", r["slew"]["pwm_us_per_s"], 1, 1_000_000)
+    rng("robustness.link.diag_period_ms", r["link"]["diag_period_ms"], 0, 60000)
+    rng("robustness.w5500.fail_threshold", r["w5500"]["fail_threshold"], 1, 100)
 
     board = take(load_yaml(board_path), "board", {
         "name": str, "chip": str, "sdk_board": str, "description": str, "source": str,
@@ -241,7 +286,7 @@ def build(config_path: str, board_path: str) -> Dict[str, Any]:
         "led_pin": led_pin, "led_level": led["active_level"], "acts": out_acts, "mac": mac,
         "ip": parse_ip("comm_core.pico.host", pico["host"]), "port": rng("comm_core.pico.port", pico["port"], 1, 65535),
         "netmask": parse_ip("network.netmask", net["netmask"]), "gateway": parse_ip("network.gateway", net["gateway"]),
-        "cmd_timeout_ms": pico["pico_cmd_timeout_ms"], "sources": [config_path, board_path, comm_path, hand_path],
+        "cmd_timeout_ms": pico["pico_cmd_timeout_ms"], "rob": r, "sources": [config_path, board_path, comm_path, hand_path],
     }
 
 
@@ -321,6 +366,9 @@ def render_header(c: Dict[str, Any]) -> str:
         f"#define FW_MAX_CMD_TIMEOUT_MS   {safety['max_cmd_timeout_ms']}",
         f"#define FW_HW_WATCHDOG_MS       {safety['hw_watchdog_ms']}",
         "",
+        "/* 강건성 (controller.yaml robustness) */",
+        *rob_lines(c["rob"]),
+        "",
         "/* 액추에이터: hand_model.yaml 순서 = ACTUATOR_CMD/STATE 값 순서 */",
         f"#define FW_N_ACT                {len(c['acts'])}",
         f"#define FW_N_STS                {n_sts}",
@@ -332,6 +380,21 @@ def render_header(c: Dict[str, Any]) -> str:
     L.append("}")
     L.append("")
     return "\n".join(L)
+
+
+def rob_lines(r: Dict[str, Any]) -> List[str]:
+    out = []
+    for sec, vals in r.items():
+        for k, v in vals.items():
+            name = f"FW_R_{sec}_{k}".upper()
+            if isinstance(v, list):
+                out.append(f"#define {name}_MIN {v[0]}")
+                out.append(f"#define {name}_MAX {v[1]}")
+            elif isinstance(v, str):
+                out.append(f"#define {name}_OFF {1 if v == 'torque_off' else 0}")
+            else:
+                out.append(f"#define {name} {v}")
+    return out
 
 
 def render_cmake(c: Dict[str, Any]) -> str:

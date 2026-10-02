@@ -35,6 +35,7 @@ add_executable(pico_controller
     src/w5500.c
     src/sts_bus.c
     src/actuators.c
+    src/diag.c
 )
 target_include_directories(pico_controller PRIVATE src ${FW_GEN_DIR})
 target_compile_options(pico_controller PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)

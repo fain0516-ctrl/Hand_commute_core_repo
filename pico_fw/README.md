@@ -25,7 +25,7 @@ cmake --build build -j
 
 | 파일 | 내용 |
 |---|---|
-| `config/controller.yaml` | MAC/넷마스크/게이트웨이, W5500 소켓 수·버퍼, 서보 버스 보레이트·타이밍, PWM 주파수, 안전 파라미터 |
+| `config/controller.yaml` | MAC/넷마스크/게이트웨이, W5500 소켓 수·버퍼, 서보 버스 보레이트·타이밍, PWM 주파수, 안전 파라미터, **강건성 임계값 (`robustness:`)** |
 | `config/boards/pico2_w5500.yaml` | Pico 2 + W5500 모듈 (점퍼 배선). `Pico_middle_controller.md` 3장 핀 배분 |
 | `config/boards/middleware_pcb_rev0.yaml` | 업로드된 컨트롤러 PCB (RP2350B 칩 내장형) 에서 읽은 핀 |
 | `../config/comm_core.yaml` (Pi) | **Pico IP = `pico.host`, 포트 = `pico.port`, 자체 워치독 = `pico.pico_cmd_timeout_ms`** 를 그대로 읽음 |
@@ -51,11 +51,34 @@ Pi 와 같은 값을 두 번 적지 않으므로, IP 나 서보 ID 를 바꾸면
 
 STS 토크 해제는 응답 없는 패킷이므로 해제 상태에서 `torque_off_repeat_ms` 마다 다시 보냅니다. 토크를 켤 때는 목표 위치를 먼저 쓰고 켭니다 (예전 목표로 튀지 않게).
 
+## 강건성 (잡음, 누락, 관측 불가)
+
+"모든 데이터가 지연·누락 없이 관측된다" 는 가정을 빼고, 각 경로에서 깨지거나 빠질 수 있다고 보고 처리합니다.
+임계값은 모두 `config/controller.yaml` 의 `robustness:` 에 있고, 생성기가 키 누락·오타·범위를 검사합니다.
+
+| 경로 | 깨질 수 있는 것 | 처리 |
+|---|---|---|
+| Pi ↔ Pico (TCP, W5500-Pico SPI) | 바이트 비트 오류, 프레임 누락, 지연/지터 | CRC-16 으로 버리고 재동기화. 수신 seq 가 건너뛰면 `seq_gaps` + DEGRADED. 지령 간격 최대/평균 측정, `cmd_jitter_warn_ms` 초과면 DEGRADED. STATE 에 응답한 지령 seq 를 담아 Pi 가 왕복 시간과 누락을 잼 |
+| W5500 (SPI) | 레지스터 읽기 오류, 칩 단독 리셋, 값이 계속 흔들림 | 설정은 쓰고 다시 읽어 확인. `health_period_ms` 마다 VERSIONR/IP/MAC/소켓 상태 확인, `fail_threshold` 연속 실패면 연결을 버리고(=토크 해제) 재초기화, `fallback_after` 회 이상이면 SPI 클럭을 `fallback_baud_hz` 로 낮춤. 16비트 레지스터 안정 읽기는 횟수 제한. 소켓이 닫힌 것으로 읽히면 한 번 더 읽어 확인 |
+| 서보 버스 (반이중 UART) | 비트 오류, 바이트 유실, 잡음 바이트, 충돌 | 송신 에코를 보낸 값과 비교해 틀리면 재전송(`write_retries`). 응답은 헤더 재동기화 + ID/길이/체크섬 검사, `read_retries` 재시도 |
+| 서보 측정값 | 8비트 체크섬을 우연히 통과한 엉뚱한 값 | 타당성 검사: 위치 범위, 직전 값에서 `max_speed_ticks_per_s × dt + jump_margin_ticks` 넘는 점프, 온도/전압 범위. `max_reject_streak` 번 연속이면 실제 변화로 인정 |
+| 서보 측정 누락 | 응답 없음, 버스 전체 무응답 | 축별 `age_ms` 보고. `stale_ms` 초과 → STALE + 관측기 추정값(목표를 향한 1차 지연, `observer_tau_ms`, `estimate_max_ms` 까지). `lost_ms` 초과 → NO_RESPONSE + `lost_action` (hold = 목표 고정). 모든 STS 가 `bus_dead_ms` 넘게 무응답 → `bus_dead_action` (torque_off). 측정이 돌아오면 측정 위치에서 다시 켬 |
+| 서보 지령 (응답 없는 SYNC WRITE) | 서보가 패킷을 놓침, 서보 저전압 리셋으로 토크 꺼짐 | `verify_period_ms` 마다 한 축씩 TORQUE_ENABLE/GOAL 을 읽어 비교, 다르면 CMD_MISMATCH + 다시 씀 |
+| 지령 자체 | 큰 계단, 튄 지령 | 변화율 제한 (`sts_ticks_per_s`, `pwm_us_per_s`). 토크를 켤 때는 측정 위치에서 출발 |
+| 서보 상태 | 과열, 전압 이상, 과부하 | 경고 플래그 + DEGRADED. `temp_off_c`/`load_off_permille` 가 `protect_ms` 동안 계속되면 그 축만 토크 해제(PROTECT_OFF), Pi 가 그 축 토크를 해제할 때까지 유지 |
+| Pico 자체 | 루프 지연, 리셋 | core1 루프 최대 시간/초과 횟수 측정. 리셋 원인(POR/BOR 저전압/RUN 핀/글리치/워치독) 을 DIAG 로 보고 |
+
+고장 단계 (축별 `level`, 전체는 `status` bit8-9): `OK` → `DEGRADED` (재시도/누락/추정값 사용 중, 제어 계속) → `HOLD` (관측 불가 축 목표 고정) → `SAFE_OFF` (토크 해제: 워치독/ESTOP/보호/버스 무응답).
+
+DIAG 메시지(`diag_period_ms` 마다, 연결 직후 1회): 가동 시간, 리셋 원인, 전체 단계, 수신 프레임/CRC 오류/버린 바이트/seq 건너뜀, 지령 간격 최대/평균, 버스 타임아웃/깨진 패킷/에코 오류/재시도, 타당성 탈락, 재확인 불일치, 변화율 제한, SPI 오류, W5500 재초기화, 연결 끊김, 루프 초과/최대, 워치독, ESTOP, 보호 해제. 순서는 `src/proto.h` 의 `DIAG_FIELDS` 와 `comm_core/protocol.py` 의 `DIAG_FIELDS` 가 같아야 하며 시험이 검사합니다.
+
 ### STATE 필드
 
-- `status`: bit0 토크 걸린 축 있음, bit1 워치독 해제, bit2 ESTOP, bit3 응답 없는 서보 있음, bit4 HELLO 받음
+- `status`: bit0 Pi 가 토크를 요청한 축 있음, bit1 워치독 해제, bit2 ESTOP, bit3 응답 없는 서보 있음, bit4 HELLO 받음, bit5 최근 seq 건너뜀/지터, bit8-9 고장 단계
 - `error`: 마지막 ERROR 코드 (1 payload 오류, 2 축 수 불일치, 3 지원하지 않는 모드, 4 값 잘림)
-- 축마다 `position` (STS tick / PWM us), `velocity` (STS step/s), `effort` (STS Present Load, 0.1 % 단위, 부호 있음), `temperature` (0.1 °C), `flags` (bit0 응답 없음, bit1 패킷 오류, bit2 서보 오류 바이트, bit3 토크 켜짐, bit4 값 잘림)
+- `cmd_seq`: 이 STATE 가 응답한 ACTUATOR_CMD 의 seq (Pi 의 왕복 시간/누락 측정용)
+- 축마다 24 B: `position` (STS tick / PWM us), `velocity` (STS step/s), `effort` (STS Present Load, 0.1 % 단위, 부호 있음), `temperature` (0.1 °C), `flags`, `age_ms` (마지막 유효 측정 이후, 0xFFFF = 측정 없음), `voltage` (0.1 V), `level`
+- `flags`: bit0 응답 없음, bit1 패킷 오류, bit2 서보 오류 바이트, bit3 실제로 토크 켜짐, bit4 값 잘림, bit5 STALE, bit6 추정값, bit7 타당성 탈락, bit8 과열, bit9 전압, bit10 과부하, bit11 지령 불일치(재전송함), bit12 변화율 제한 중, bit13 HOLD, bit14 보호 해제
 - STS 상태는 core1 이 라운드로빈으로 읽습니다 (`reads_per_loop: 2`, `loop_period_us: 2000` → 6 축 전체 약 6 ms 마다 갱신)
 
 ## 시험 (하드웨어 없이)
@@ -73,8 +96,18 @@ python3 pico_fw/host/pipeline_check.py --out report.md
 ```
 
 팀 UDP 포트(CH2 지령, CH3 슬립, CH4 VLA)에 가상 입력을 넣고, 실제 `comm_core.CommCore` 가 보낸 TCP 지령을 펌웨어가 처리한 결과를 기록합니다.
+(서보로 나가는 목표는 변화율 제한 때문에 여러 주기에 나눠 나갑니다.)
 이 경우 펌웨어는 서보 루프(`actuators.c`, `sts_bus.c`)까지 포함해 `host/hal_stub.c` (Pico SDK 대체, 가짜 STS3215 6개) 위에서 돕니다.
 기록하는 출력은 세 가지입니다: Pi 로 가는 TCP 프레임, 서보 버스 UART 패킷, PWM 펄스 폭. 시나리오별로 분류해 보고서로 냅니다.
+
+### 고장 주입
+
+```bash
+python3 pico_fw/host/fault_check.py --out fault_report.md    # 시나리오 하나만: --only dead_servo
+```
+
+같은 시뮬레이터에 stdin 으로 고장을 넣고(`fault uart_flip 3000`, `fault dead 4 1`, `fault tcp_rx_flip 2000` 등, 목록은 `host/hal_stub.c` 의 `hal_fault()` 와 `host/sim_main.c` 머리말), Pi 쪽 `PicoLink` 가 100 Hz 로 위치 지령을 보내며 STATE/DIAG 를 기록합니다.
+시나리오 14 개(정상, 버스 잡음 약/강, 에코 오류, 튄 측정값, 서보 1 개 무응답, 버스 전체 무응답, 서보 리셋, 놓친 쓰기, 과열, Pi→Pico 잡음, Pico→Pi 잡음, Pico 멈춤, 계단 지령)와 W5500 SPI 시험(`host/w5500_fault_test.c`: 실제 `w5500.c` 를 레지스터 에뮬레이터에 붙여 설정 쓰기 오류, 칩 리셋, 읽기 잡음, 흔들리는 레지스터, Sn_SR 오독, 클럭 낮춤 확인)을 돌리고 각각 기대대로인지 판정합니다. `tests/test_pico_fw.py` 가 전부 통과하는지 검사합니다.
 
 ## 업로드된 컨트롤러 PCB 검토 (middleware_pcb_rev0)
 

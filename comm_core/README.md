@@ -37,6 +37,8 @@ python3 -m unittest discover -s tests -t .
 | 잘못된 지령 | 길이 불일치, NaN/inf, 모르는 mode, 깨진 JSON 은 버리고 카운트만 증가 |
 | Pico 자체 워치독 | 연결 시 HELLO 로 `cmd_timeout_ms` 전달. **Pico 펌웨어는 이 시간 동안 지령이 없으면 스스로 토크를 해제해야 함** (Pi 가 죽거나 랜선이 빠진 경우 대비) |
 | 링크 감시 | 300 ms 동안 Pico 수신이 없으면 끊김으로 판단하고 재연결(100 ms~2 s 백오프). 텔레메트리 status = `PICO_DISCONNECTED` |
+| 관측 불가 | 연결은 살아 있지만 마지막 STATE 가 `pico.state_stale_s` (50 ms) 보다 오래되면 마지막 값을 유지하고 status = `PICO_STALE` |
+| 링크 품질 | STATE 가 돌려주는 지령 seq 로 왕복 시간(최근/최대/평균)과 응답 없는 지령 수, 수신 CRC 오류를 셈 (`PicoLink.stats`). Pico 의 DIAG 카운터는 `PicoLink.latest_diag` |
 | 종료 | 종료 시 Pico 에 `ESTOP` 송신 |
 
 ## CH2 지령 형식 (3-B → 3-A, :5556)
@@ -54,7 +56,9 @@ python3 -m unittest discover -s tests -t .
 ## CH1 텔레메트리 (3-A → 3-B, :5555, 100 Hz)
 
 규격서 그대로 `seq, timestamp, status, q[14], dq[14], actuator_pos[10], actuator_vel[10], actuator_torque[10]`.
-`status` 는 `NORMAL` / `WATCHDOG` / `PICO_DISCONNECTED`.
+`status` 는 `NORMAL` / `WATCHDOG` / `PICO_DISCONNECTED` / `PICO_STALE` (연결은 있지만 Pico 상태가 `state_stale_s` 넘게 안 옴, 값은 마지막 것).
+
+`channels.include_diagnostics: true` 면 규격 외 확장 키 `diagnostics` 가 붙습니다: `fault_level` (OK/DEGRADED/HOLD/SAFE_OFF), `state_age_ms`, 축별 `actuator_age_ms` (측정 나이), `actuator_valid` (신선한 실측값이면 true, 추정값/무응답/STALE 이면 false), `actuator_flags`, `link` (왕복 시간, 누락, CRC 오류, 재연결), `pico` (Pico DIAG 카운터). 3-B 가 관측 불가 축을 제어에서 빼거나 게인을 낮출 때 씁니다.
 
 `actuator_torque` 는 STS3215 Present Load 값에 `nm_per_effort` 를 곱한 **추정치**입니다 (STS3215 에는 토크 센서와 토크 제어 모드가 없음). PWM 축은 0 입니다.
 

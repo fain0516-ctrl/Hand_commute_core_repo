@@ -25,7 +25,13 @@
 #define PROTO_MAX_PAYLOAD 1024
 #define PROTO_MAX_FRAME (PROTO_HEADER_SIZE + PROTO_MAX_PAYLOAD + PROTO_CRC_SIZE)
 #define PROTO_MAX_ACTUATORS 32
-#define PROTO_AXIS_STATE_SIZE 16
+#define PROTO_AXIS_STATE_SIZE 24     /* 확장 레코드 (STATE.axis_size 에 기록) */
+#define PROTO_STATE_HEAD_SIZE 8
+
+/* HELLO_ACK.capabilities */
+#define CAP_STATE_EXT 0x01
+#define CAP_DIAG 0x02
+#define CAP_CMD_SEQ_ECHO 0x04
 
 enum {
     MSG_HELLO = 0x01,
@@ -34,6 +40,7 @@ enum {
     MSG_ACTUATOR_CMD = 0x10,
     MSG_ESTOP = 0x11,
     MSG_STATE = 0x20,
+    MSG_DIAG = 0x21,
     MSG_ERROR = 0x7F,
 };
 
@@ -61,7 +68,43 @@ typedef struct {
     int32_t effort;
     int16_t temperature_c10;
     uint16_t flags;
+    uint16_t age_ms;    /* 마지막 유효 측정 이후 (0xFFFF = 측정 없음) */
+    uint8_t voltage_dv; /* 0.1 V */
+    uint8_t level;      /* 축 고장 단계 */
 } proto_axis_state_t;
+
+#define AGE_UNKNOWN 0xFFFF
+
+/* DIAG 필드 순서. comm_core/protocol.py 의 DIAG_FIELDS 와 같아야 한다 (tests/test_pico_fw.py 가 검사). */
+#define DIAG_FIELDS(X)          \
+    X(UPTIME_MS)                \
+    X(RESET_CAUSE)              \
+    X(FAULT_LEVEL)              \
+    X(RX_FRAMES)                \
+    X(CRC_ERRORS)               \
+    X(DROPPED_BYTES)            \
+    X(SEQ_GAPS)                 \
+    X(CMD_INTERVAL_MAX_US)      \
+    X(CMD_INTERVAL_MEAN_US)     \
+    X(BUS_TIMEOUTS)             \
+    X(BUS_BAD_PACKETS)          \
+    X(BUS_ECHO_ERRORS)          \
+    X(BUS_RETRIES)              \
+    X(IMPLAUSIBLE_SAMPLES)      \
+    X(VERIFY_MISMATCHES)        \
+    X(SLEW_LIMITED)             \
+    X(SPI_ERRORS)               \
+    X(W5500_REINITS)            \
+    X(LINK_DROPS)               \
+    X(LOOP_OVERRUNS)            \
+    X(LOOP_MAX_US)              \
+    X(WATCHDOG_TRIPS)           \
+    X(ESTOPS)                   \
+    X(PROTECT_TRIPS)
+
+#define DIAG_ENUM(name) DIAG_##name,
+enum { DIAG_FIELDS(DIAG_ENUM) DIAG_COUNT };
+#undef DIAG_ENUM
 
 uint16_t proto_crc16(const uint8_t *data, size_t len, uint16_t crc);
 

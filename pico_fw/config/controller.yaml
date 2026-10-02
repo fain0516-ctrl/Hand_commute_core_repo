@@ -39,3 +39,50 @@ safety:
   hw_watchdog_ms: 500          # RP2350 하드웨어 워치독. 메인 루프가 멈추면 리셋 (리셋 후 토크 해제 상태로 시작)
   min_cmd_timeout_ms: 20       # HELLO 로 받은 cmd_timeout_ms 의 허용 범위 (벗어나면 잘라 쓴다)
   max_cmd_timeout_ms: 1000
+
+# ---------------------------------------------------------------- 강건성
+# 보드 잡음(SPI/반이중 UART 오류), 서보 피드백 누락, 지령 지연을 가정한 처리. 모든 임계값은 여기서 바꾼다.
+# 고장 단계: OK -> DEGRADED(경고, 제어 계속) -> HOLD(관측 불가 축 목표 고정) -> SAFE_OFF(토크 해제)
+robustness:
+  servo_bus:
+    read_retries: 1            # 읽기 응답이 없거나 깨지면 다시 묻는 횟수
+    write_retries: 2           # 자기 송신 에코가 보낸 것과 다르면(버스 잡음/충돌) 다시 보내는 횟수 (echo: true 일 때)
+    verify_period_ms: 20       # 이 주기마다 서보 1개의 토크/목표 레지스터를 다시 읽어 지령과 비교 (라운드로빈)
+                               # 응답 없는 SYNC WRITE 가 잡음으로 사라졌거나 서보가 저전압 리셋된 경우를 잡는다
+    goal_tolerance_ticks: 2    # 재확인 시 목표 위치 허용 오차
+    read_budget_us: 1200       # 한 루프에서 상태 읽기에 쓰는 시간 상한. 잡음으로 타임아웃/재시도가 겹쳐도
+                               # loop_period_us 를 넘지 않게 남은 읽기는 다음 루프로 미룬다 (첫 읽기는 항상 함)
+  feedback:
+    stale_ms: 20               # 마지막 유효 측정이 이보다 오래되면 STALE (DEGRADED)
+    lost_ms: 100               # 이보다 오래되면 NO_RESPONSE, lost_action 적용
+    lost_action: hold          # hold = 그 축 목표를 마지막 값으로 고정 (서보 자체 위치 루프는 계속 유지)
+                               # torque_off = 그 축 토크 해제
+    bus_dead_ms: 300           # 모든 STS 축이 이 시간 넘게 응답 없으면 bus_dead_action
+    bus_dead_action: torque_off  # hold | torque_off
+    observer_tau_ms: 40        # 측정이 빠진 동안 위치 추정: 목표를 향한 1차 지연 모델의 시정수
+    estimate_max_ms: 100       # 이 시간까지만 추정을 진행하고 이후로는 추정값을 고정
+  plausibility:                # 체크섬(8비트 합)을 우연히 통과한 깨진 샘플을 걸러낸다
+    max_speed_ticks_per_s: 6000  # 이보다 빠른 위치 변화는 물리적으로 불가능한 값으로 본다
+    jump_margin_ticks: 40
+    max_reject_streak: 3       # 연속으로 이만큼 버리면 실제 변화(손으로 돌림 등)로 보고 받아들인다
+    temp_valid_max_c: 120      # 이보다 높은 온도 값은 깨진 값
+    voltage_valid_dv: [40, 160]  # 이 범위 밖 전압 값은 깨진 값 (0.1 V)
+  protection:
+    temp_warn_c: 60            # OVERTEMP 경고 (DEGRADED)
+    temp_off_c: 70             # protect_ms 동안 계속되면 그 축 토크 해제
+    voltage_warn_dv: [60, 140] # 이 범위 밖이면 VOLTAGE 경고
+    load_warn_permille: 800    # |Present Load| (0.1 % 단위) 경고
+    load_off_permille: 950     # protect_ms 동안 계속되면 그 축 토크 해제
+    protect_ms: 500
+  slew:                        # 지령 변화율 제한 (잡음으로 튄 지령이나 큰 계단 지령에도 급격히 움직이지 않게)
+    sts_ticks_per_s: 6000
+    pwm_us_per_s: 4000
+  link:
+    diag_period_ms: 500        # DIAG (진단 카운터) 송신 주기
+    degrade_hold_ms: 1000      # seq 건너뜀/지령 지터 후 DEGRADED 를 유지하는 시간
+    cmd_jitter_warn_ms: 30     # 지령 간격이 이보다 길면 DEGRADED (정상 10 ms)
+  w5500:
+    health_period_ms: 100      # VERSIONR/IP/MAC/PHY 레지스터를 다시 읽어 SPI 상태 확인
+    fail_threshold: 2          # 연속 실패 횟수가 이만큼이면 W5500 재초기화 (연결 끊김 -> 토크 해제)
+    fallback_baud_hz: 8000000  # 재초기화가 fallback_after 번 쌓이면 SPI 속도를 이 값으로 낮춘다
+    fallback_after: 3
