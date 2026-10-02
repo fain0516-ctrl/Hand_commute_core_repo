@@ -1,0 +1,52 @@
+# ethernet-to-servo-middleware-controller (Altium, 2026/09/23) 칩 내장형 RP2350B 보드.
+# 업로드된 PcbDoc/SchDoc 에서 U2(RP2350BQFN-80) 패드별 넷을 따라가 읽은 값이다.
+# 이 보드는 그대로는 TCP 통신이 되지 않는다 (pico_fw/README.md 의 "PCB 검토" 참고).
+#   - W5500 이 없고, 그 자리에 SJA1105PELY(이더넷 스위치, U7)가 같은 SPI0 핀에 연결되어 있다.
+#   - SPI CS 가 RP2350 에 연결되어 있지 않다 (U7.SS_N 이 USB-C CC2 넷에 묶여 있음).
+#   - 서보 커넥터와 UART 배선이 없다.
+# 아래 SPI 핀에 W5500 을 달면(SJA1105 대체) 이 펌웨어가 그대로 동작하도록 맞춰 두었다.
+
+name: middleware_pcb_rev0
+chip: rp2350b                  # U2 = RP2350B QFN-80 (GPIO 0~47)
+sdk_board: middleware_pcb_rev0 # pico_fw/boards/middleware_pcb_rev0.h
+description: ethernet-to-servo-middleware-controller rev0 (RP2350B chip-down)
+source: ethernet-to-servo-middleware-controller.PcbDoc / Sheet2.SchDoc (U2), Sheet8 (U7), Sheet10 (U9)
+
+w5500:
+  spi: 0
+  baud_hz: 33000000
+  sck: 6                       # PCB: U2.3  GPIO6  -> net SCK -> U7.P5 SCK
+  mosi: 39                     # PCB: U2.48 GPIO39 -> net SDI -> U7.N5 SDI
+  miso: 32                     # PCB: U2.40 GPIO32 -> net SDO -> U7.P4 SDO
+  cs: 33                       # 추정: PCB 에 CS 배선 없음. GPIO33(U2.42, SPI0 CSn 기능 핀, 미사용)
+  rst: 42                      # PCB: U2.53 GPIO42 -> U7.P3 RST_N
+  int: null                    # PCB: 인터럽트 배선 없음
+
+servo_bus:
+  uart: 0
+  tx: 44                       # 추정: U2.55 GPIO44 (UART0 TX 기능 핀, 미사용)
+  rx: 45                       # PCB: U2.56 GPIO45 -> U9.2 A1 (NTSX2102 레벨 시프터) -> U9.7 B1 -> R41 (커넥터 없음)
+  echo: true
+  dir: null
+  dir_tx_level: 1
+  oe: 40                       # PCB: U2.49 GPIO40 -> U9.5 OE (NTSX2102, High = 활성)
+  oe_active_level: 1
+
+pwm_pins: [7, 8, 9, 10]        # 추정: PCB 에 PWM 출력 커넥터 없음. 미사용 GPIO7~10
+
+status_led: {pin: null, active_level: 1}   # PCB: GPIO 로 구동하는 LED 없음 (LED1~4 는 충전 IC 상태 LED)
+
+aux_inputs:                    # PCB 에 연결은 되어 있으나 펌웨어는 아직 쓰지 않는 입력 (핀 중복 검사용)
+  - {name: chrg_u1,  pin: 5,  note: "U2.2  GPIO5  <- U1.1 CHRG (STC4054 충전 상태, LED1)"}
+  - {name: chrg_u12, pin: 41, note: "U2.52 GPIO41 <- U12.1 CHRG (LED4)"}
+  - {name: chrg_u4,  pin: 43, note: "U2.54 GPIO43 <- U4.1 CHRG (LED2)"}
+  - {name: prog_u5,  pin: 4,  note: "U2.1  GPIO4  -- U5.5 PROG (충전 전류 설정 핀, GPIO 연결은 설계 오류로 보임)"}
+  - {name: sda0,     pin: 0,  note: "U2.77 GPIO0 풀업 R9 만 있음 (I2C 장치 없음)"}
+  - {name: scl0,     pin: 1,  note: "U2.78 GPIO1 풀업 R10"}
+  - {name: sda1,     pin: 2,  note: "U2.79 GPIO2 풀업 R11"}
+  - {name: scl1,     pin: 3,  note: "U2.80 GPIO3 풀업 R12"}
+
+inferred:
+  - "w5500.cs = GPIO33 (PCB 에 CS 배선 없음)"
+  - "servo_bus.tx = GPIO44 (PCB 에 서보 UART 배선 없음)"
+  - "pwm_pins = GPIO7~10 (PCB 에 PWM 출력 없음)"

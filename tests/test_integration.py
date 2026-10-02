@@ -6,7 +6,7 @@ import time
 import unittest
 
 from comm_core.config import config_from_dict, load_config, read_file
-from comm_core.core import STATUS_LINK_DOWN, STATUS_NORMAL, STATUS_WATCHDOG, CommCore
+from comm_core.core import STATUS_LINK_DOWN, STATUS_NORMAL, STATUS_STALE, STATUS_WATCHDOG, CommCore
 from comm_core.fake_pico import FakePico
 from comm_core.pico_link import PicoLink
 from comm_core.protocol import CmdFlag, CmdMode
@@ -111,6 +111,7 @@ class CommCoreTest(unittest.TestCase):
                 slip_relay_dest=self.slip_sink.getsockname(),
                 vla_action_relay_dest=self.vla_sink.getsockname(),
                 include_fingertips=True,
+                include_diagnostics=True,
             ),
         )
         self.core = CommCore(cfg)
@@ -138,7 +139,31 @@ class CommCoreTest(unittest.TestCase):
         self.assertEqual(self.pico.last_cmd.mode, CmdMode.TORQUE)
         self.assertEqual(self.pico.last_cmd.values, [0] * 10)
         self.assertEqual(self.pico.last_cmd_flags & CmdFlag.WATCHDOG_TRIPPED, CmdFlag.WATCHDOG_TRIPPED)
-        self.assertEqual(recv_json(self.telemetry)["status"], STATUS_WATCHDOG)
+        self.assertTrue(wait_for(lambda: self.core.link.latest_state is not None))
+        self.tick(1)
+        self.assertEqual(drain(self.telemetry)["status"], STATUS_WATCHDOG)
+
+    def test_status_stale_when_state_missing(self):
+        self.tick(3)
+        self.assertTrue(wait_for(lambda: self.core.link.latest_state is not None))
+        self.pico.drop_state = True  # 링크(하트비트)는 살아 있지만 STATE 가 오지 않음
+        self.tick(8)
+        msg = drain(self.telemetry)
+        self.assertTrue(self.core.link.connected)
+        self.assertEqual(msg["status"], STATUS_STALE)
+        self.assertEqual(msg["diagnostics"]["actuator_valid"], [False] * 10)
+        self.assertGreater(msg["diagnostics"]["state_age_ms"], 50)
+
+    def test_diagnostics_rtt_and_validity(self):
+        self.send(self.core.cmd_rx, {"mode": "position", "positions": [0.1] * 10})
+        self.tick(5)
+        self.assertTrue(wait_for(lambda: self.core.link.stats["rtt_n"] >= 3))
+        self.tick(1)
+        d = drain(self.telemetry)["diagnostics"]
+        self.assertEqual(d["actuator_valid"], [True] * 10)
+        self.assertEqual(d["fault_level"], "OK")
+        self.assertGreater(d["link"]["rtt_ms_max"], 0)
+        self.assertLess(d["link"]["rtt_ms_mean"], 50)
 
     def test_torque_command_is_clamped_and_forwarded(self):
         self.send(self.core.cmd_rx, {"mode": "torque", "torques": [5.0, -5.0] + [1.0] * 7 + [-9.0]})

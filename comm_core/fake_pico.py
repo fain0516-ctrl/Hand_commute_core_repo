@@ -46,6 +46,7 @@ class FakePico:
         self.estops = 0
         self.connections = 0
         self.mute = False  # True 면 응답하지 않음 (링크 타임아웃 시험용)
+        self.drop_state = False  # True 면 STATE 만 보내지 않음 (하트비트는 응답: 관측 불가 시험용)
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._srv.bind((host, port))
@@ -130,7 +131,8 @@ class FakePico:
                 elif f.msg_type == MsgType.ACTUATOR_CMD:
                     last_cmd_t = time.monotonic()
                     self._apply(ActuatorCmd.unpack(f.payload), f.flags)
-                    self._send(conn, MsgType.STATE, self._state().pack())
+                    if not self.drop_state:
+                        self._send(conn, MsgType.STATE, self._state(f.seq).pack())
             if (time.monotonic() - last_cmd_t) * 1000 > self.cmd_timeout_ms:
                 self.torque_enabled = False
 
@@ -144,10 +146,11 @@ class FakePico:
         elif cmd.mode == CmdMode.TORQUE:
             self.torque_enabled = any(cmd.values)
 
-    def _state(self) -> State:
+    def _state(self, cmd_seq: int = 0) -> State:
         return State(
             status=1 if self.torque_enabled else 0,
             actuators=[ActuatorState(position=p, temperature_c10=300) for p in self.positions],
+            cmd_seq=cmd_seq,
         )
 
 

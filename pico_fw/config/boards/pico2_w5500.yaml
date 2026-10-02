@@ -1,0 +1,36 @@
+# Raspberry Pi Pico 2 + W5500 모듈 (점퍼 배선). Pico_middle_controller.md 3장 핀 배분 그대로.
+# 지금 바로 시험할 수 있는 기본 보드다.
+
+name: pico2_w5500
+chip: rp2350a                  # Pico 2 = RP2350A (GPIO 0~29)
+sdk_board: pico2
+description: Raspberry Pi Pico 2 + W5500 SPI 모듈
+source: Pico_middle_controller.md 3장
+
+w5500:
+  spi: 0
+  baud_hz: 33000000            # W5500 는 이론상 80 MHz 까지. 점퍼선이면 20~33 MHz 권장
+  sck: 18
+  mosi: 19
+  miso: 16
+  cs: 17
+  rst: 21                      # 문서 표의 GP20=INT, GP21=RST
+  int: 20                      # 펌웨어는 폴링으로 동작하므로 없어도 됨 (null)
+
+servo_bus:
+  uart: 0
+  tx: 0
+  rx: 1
+  echo: true                   # TX/RX 를 다이오드+저항으로 합친 경우 자기 송신이 RX 로 돌아온다
+  dir: 2                       # MAX485/74HC126 방향 제어. 없으면 null
+  dir_tx_level: 1
+  oe: null                     # 레벨 시프터 OE 핀 (없음)
+  oe_active_level: 1
+
+pwm_pins: [6, 7, 8, 9]         # PWM 채널 0~3 (hand_model.yaml 의 pwm bus_id)
+
+status_led: {pin: 25, active_level: 1}
+
+aux_inputs: []
+
+inferred: []

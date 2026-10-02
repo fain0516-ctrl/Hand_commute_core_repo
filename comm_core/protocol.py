@@ -44,6 +44,7 @@ class MsgType(IntEnum):
     ACTUATOR_CMD = 0x10   # Pi -> Pico: 액추에이터 지령
     ESTOP = 0x11          # Pi -> Pico: 전 축 토크 해제
     STATE = 0x20          # Pico -> Pi: 액추에이터 상태 피드백
+    DIAG = 0x21           # Pico -> Pi: 진단 카운터 (주기적)
     ERROR = 0x7F          # 양방향: 오류 보고
 
 
@@ -199,40 +200,122 @@ class ActuatorCmd:
         return cls(mode, list(values))
 
 
+# HELLO_ACK.capabilities 비트
+CAP_STATE_EXT = 0x01   # STATE 축 레코드 24 B (age/voltage/fault level 포함)
+CAP_DIAG = 0x02        # DIAG 메시지 송신
+CAP_CMD_SEQ_ECHO = 0x04  # STATE 에 응답한 ACTUATOR_CMD 의 seq 를 담음
+
+# STATE.status 비트 (펌웨어 session.h 와 같음)
+ST_TORQUE_ENABLED = 0x0001
+ST_WATCHDOG = 0x0002
+ST_ESTOP = 0x0004
+ST_BUS_FAULT = 0x0008
+ST_HELLO_DONE = 0x0010
+ST_SEQ_GAP = 0x0020
+ST_LEVEL_SHIFT = 8      # bit8-9: 고장 단계 (FaultLevel)
+ST_LEVEL_MASK = 0x0300
+
+
+class FaultLevel(IntEnum):
+    OK = 0         # 정상
+    DEGRADED = 1   # 경고: 재시도/누락/추정값 사용 중이지만 제어는 계속
+    HOLD = 2       # 일부 축 관측 불가: 해당 축 목표를 고정
+    SAFE_OFF = 3   # 토크 해제 (워치독/ESTOP/보호)
+
+
+# 축 flags 비트 (펌웨어 session.h AX_* 와 같음)
+AX_NO_RESPONSE = 0x0001   # 피드백 끊김 (lost_ms 초과)
+AX_BAD_PACKET = 0x0002    # 마지막 읽기가 깨진 패킷
+AX_SERVO_ERROR = 0x0004   # 서보 상태 바이트 오류
+AX_TORQUE_ON = 0x0008
+AX_CLAMPED = 0x0010
+AX_STALE = 0x0020         # 피드백이 stale_ms 보다 오래됨
+AX_ESTIMATED = 0x0040     # 이번 값은 측정이 아니라 관측기 추정값
+AX_IMPLAUSIBLE = 0x0080   # 마지막 샘플이 타당성 검사에서 버려짐
+AX_OVERTEMP = 0x0100
+AX_VOLTAGE = 0x0200
+AX_OVERLOAD = 0x0400
+AX_CMD_MISMATCH = 0x0800  # 서보 레지스터 재확인 결과가 지령과 다름 (재전송함)
+AX_SLEW_LIMITED = 0x1000  # 지령 변화율 제한이 걸림
+AX_HOLD = 0x2000          # 관측 불가로 목표를 고정 중
+AX_PROTECT_OFF = 0x4000   # 과열/과부하 보호로 토크 해제
+
+AGE_UNKNOWN = 0xFFFF
+
+# DIAG 필드 순서 (펌웨어 proto.h 의 DIAG_FIELDS 와 같음, tests 가 일치 여부를 검사)
+DIAG_FIELDS = [
+    "uptime_ms", "reset_cause", "fault_level", "rx_frames", "crc_errors", "dropped_bytes", "seq_gaps",
+    "cmd_interval_max_us", "cmd_interval_mean_us", "bus_timeouts", "bus_bad_packets", "bus_echo_errors",
+    "bus_retries", "implausible_samples", "verify_mismatches", "slew_limited", "spi_errors", "w5500_reinits",
+    "link_drops", "loop_overruns", "loop_max_us", "watchdog_trips", "estops", "protect_trips",
+]
+
+
 @dataclass
 class ActuatorState:
     position: int = 0      # 원시 단위 (STS tick / PWM us)
     velocity: int = 0      # 원시 단위/s
     effort: int = 0        # STS load (0.1% 단위) 등 원시 값
     temperature_c10: int = 0
-    flags: int = 0         # 축별 오류 비트
-    STRUCT = struct.Struct("<iiihH")
+    flags: int = 0         # 축별 오류 비트 (AX_*)
+    age_ms: int = 0        # 마지막 유효 측정 이후 시간 (AGE_UNKNOWN = 측정 없음). 구형 펌웨어는 0
+    voltage_dv: int = 0    # 0.1 V
+    level: int = 0         # 축 고장 단계 (FaultLevel)
+    STRUCT = struct.Struct("<iiihH")          # 구형 16 B
+    EXT = struct.Struct("<iiihHHBB4x")        # 확장 24 B (뒤 4 B 예약)
 
 
 @dataclass
 class State:
-    """payload: status u16, error u16, count u8, reserved 3, ActuatorState x count (16 B 씩)."""
+    """payload: status u16, error u16, count u8, axis_size u8, cmd_seq u16, 축 레코드 x count.
+
+    axis_size 0 은 구형 16 B 레코드 (예전 reserved 3 바이트가 0 이던 형식과 호환).
+    """
 
     status: int = 0
     error: int = 0
     actuators: List[ActuatorState] = field(default_factory=list)
-    HEAD = struct.Struct("<HHB3x")
+    cmd_seq: int = 0
+    axis_size: int = 0
+    HEAD = struct.Struct("<HHBBH")
+
+    @property
+    def level(self) -> int:
+        return (self.status & ST_LEVEL_MASK) >> ST_LEVEL_SHIFT
 
     def pack(self) -> bytes:
-        out = self.HEAD.pack(self.status, self.error, len(self.actuators))
+        ext = self.axis_size == ActuatorState.EXT.size
+        out = self.HEAD.pack(self.status, self.error, len(self.actuators), self.axis_size, self.cmd_seq)
         for a in self.actuators:
-            out += ActuatorState.STRUCT.pack(a.position, a.velocity, a.effort, a.temperature_c10, a.flags)
+            if ext:
+                out += ActuatorState.EXT.pack(a.position, a.velocity, a.effort, a.temperature_c10, a.flags,
+                                              a.age_ms, a.voltage_dv, a.level)
+            else:
+                out += ActuatorState.STRUCT.pack(a.position, a.velocity, a.effort, a.temperature_c10, a.flags)
         return out
 
     @classmethod
     def unpack(cls, data: bytes) -> "State":
-        status, error, n = cls.HEAD.unpack_from(data)
+        status, error, n, axis_size, cmd_seq = cls.HEAD.unpack_from(data)
+        size = axis_size or ActuatorState.STRUCT.size
+        if size < ActuatorState.STRUCT.size:
+            raise struct.error(f"axis record too small: {size}")
         acts = []
         off = cls.HEAD.size
         for _ in range(n):
-            acts.append(ActuatorState(*ActuatorState.STRUCT.unpack_from(data, off)))
-            off += ActuatorState.STRUCT.size
-        return cls(status, error, acts)
+            if size >= ActuatorState.EXT.size:
+                acts.append(ActuatorState(*ActuatorState.EXT.unpack_from(data, off)))
+            else:
+                acts.append(ActuatorState(*ActuatorState.STRUCT.unpack_from(data, off)))
+            off += size  # 더 큰 레코드는 앞부분만 읽는다 (향후 확장 대비)
+        return cls(status, error, acts, cmd_seq, axis_size)
+
+
+def unpack_diag(data: bytes) -> dict:
+    """payload: count u8, reserved 3, u32 x count. 모르는 뒷 필드는 field_N 으로."""
+    (n,) = struct.unpack_from("<B3x", data)
+    vals = struct.unpack_from(f"<{n}I", data, 4)
+    return {(DIAG_FIELDS[i] if i < len(DIAG_FIELDS) else f"field_{i}"): v for i, v in enumerate(vals)}
 
 
 @dataclass

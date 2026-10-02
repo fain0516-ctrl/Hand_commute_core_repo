@@ -139,6 +139,7 @@ class TeamChannelsConfig:
     slip_relay_dest: Optional[Addr]        # 슬립 신호를 3-B 로 바로 중계할 주소
     vla_action_relay_dest: Optional[Addr]  # VLA 액션을 3-B 로 중계할 주소
     include_fingertips: bool               # 텔레메트리에 DH 기반 손끝 위치 추가 (규격 외 확장 키)
+    include_diagnostics: bool              # 텔레메트리에 축별 신선도/고장 단계/링크 품질 추가 (규격 외 확장 키)
 
 
 @dataclass

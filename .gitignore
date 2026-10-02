@@ -1,2 +1,3 @@
 __pycache__/
 *.pyc
+pico_fw/build*/

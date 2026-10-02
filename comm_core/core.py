@@ -6,6 +6,8 @@
   3. Pico 로 ACTUATOR_CMD 송신 (Pico 자체 워치독도 함께 유지)
   4. CH3 (5557) 슬립 신호 / CH4 (5559) VLA 액션 수신 -> 설정 시 3-B 로 즉시 중계
   5. Pico 최신 상태 -> CH1 (5555) 텔레메트리, CH4 프로프리오셉션 송신
+     마지막 STATE 가 pico.state_stale_s 보다 오래되면 마지막 값을 유지하고 status = PICO_STALE
+     (관측 불가를 3-B 가 알 수 있게). channels.include_diagnostics 이면 축별 신선도/고장 단계/링크 품질 추가.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .config import ActuatorConfig, CoreConfig
 from .kinematics import HandKinematics
 from .pico_link import PicoLink
-from .protocol import CmdFlag, CmdMode, State
+from .protocol import AGE_UNKNOWN, AX_ESTIMATED, AX_NO_RESPONSE, CmdFlag, CmdMode, FaultLevel, State
 from .team_channels import UdpEndpoint, parse_float_list
 
 log = logging.getLogger(__name__)
@@ -26,6 +28,7 @@ log = logging.getLogger(__name__)
 STATUS_NORMAL = "NORMAL"
 STATUS_WATCHDOG = "WATCHDOG"
 STATUS_LINK_DOWN = "PICO_DISCONNECTED"
+STATUS_STALE = "PICO_STALE"
 
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -219,9 +222,11 @@ class CommCore:
             if dest is not None:
                 self.tx.send_json(msg, dest)
 
-    def status(self) -> str:
+    def status(self, now: Optional[float] = None) -> str:
         if not self.link.connected:
             return STATUS_LINK_DOWN
+        if not self.link.state_fresh(now):
+            return STATUS_STALE
         if self.watchdog_tripped:
             return STATUS_WATCHDOG
         return STATUS_NORMAL
@@ -236,7 +241,7 @@ class CommCore:
         msg = {
             "seq": self.seq,
             "timestamp": ts,
-            "status": self.status(),
+            "status": self.status(now),
             "q": q,
             "dq": dq,
             "actuator_pos": pos,
@@ -245,10 +250,39 @@ class CommCore:
         }
         if self.telemetry.kinematics is not None:
             msg["fingertips"] = self.telemetry.kinematics.fingertips(q)
+        if ch.include_diagnostics:
+            msg["diagnostics"] = self.diagnostics(state, now)
         self.tx.send_json(msg, ch.telemetry_dest)
         if ch.proprio_dest is not None and now >= self._next_proprio:
             self._next_proprio = now + 1.0 / ch.proprio_rate_hz
             self.vla.send_json({"seq": self.seq, "timestamp": ts, "q": q, "dq": dq}, ch.proprio_dest)
+
+    def diagnostics(self, state: Optional[State], now: float) -> Dict[str, Any]:
+        """축별 측정 신선도/유효성과 링크 품질. valid = 측정값이 신선하고 추정값이 아님."""
+        n = len(self.cfg.actuators)
+        state_age_ms = self.link.state_age(now) * 1e3
+        if state is None:
+            age, flags, valid, level = [None] * n, [0] * n, [False] * n, None
+        else:
+            acts = state.actuators[:n]
+            # 축 나이 = Pico 가 보고한 측정 나이 + STATE 를 받은 뒤 지난 시간
+            age = [None if a.age_ms == AGE_UNKNOWN else round(a.age_ms + state_age_ms, 1) for a in acts]
+            flags = [a.flags for a in acts]
+            fresh = self.link.state_fresh(now)
+            valid = [fresh and not (a.flags & (AX_NO_RESPONSE | AX_ESTIMATED)) and a.age_ms != AGE_UNKNOWN
+                     for a in acts]
+            level = FaultLevel(state.level).name
+        st = self.link.stats
+        return {
+            "fault_level": level,
+            "state_age_ms": None if state is None else round(state_age_ms, 1),
+            "actuator_age_ms": age,
+            "actuator_valid": valid,
+            "actuator_flags": flags,
+            "link": {k: st[k] for k in ("rtt_ms_last", "rtt_ms_max", "rtt_ms_mean", "state_missing", "crc_errors",
+                                        "reconnects", "send_failures")},
+            "pico": self.link.latest_diag,
+        }
 
     def snapshot(self) -> str:
         return json.dumps(
