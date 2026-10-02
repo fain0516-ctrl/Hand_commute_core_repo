@@ -1,0 +1,41 @@
+# 1) 내부 서보 루프 (P=32 기본값, 부하 관성 0)
+m1: K=18.77Nm/rad B=0.619 J=0.0261 tau=1.0ms wn=4.27Hz zeta=0.44 dom=[-11.492+24.232j -11.492-24.232j] GM=30.0dB PM=45.7deg P_max=1013 sat_err=10.4deg
+m2: K=18.56Nm/rad B=0.617 J=0.0257 tau=1.2ms wn=4.27Hz zeta=0.45 dom=[-11.572+24.224j -11.572-24.224j] GM=29.2dB PM=45.9deg P_max=926 sat_err=10.4deg
+m3: K=23.89Nm/rad B=0.684 J=0.0235 tau=4.9ms wn=5.08Hz zeta=0.46 dom=[-11.895+29.368j -11.895-29.368j] GM=15.5dB PM=40.8deg P_max=190 sat_err=8.9deg
+m4: K=23.74Nm/rad B=0.681 J=0.0234 tau=4.9ms wn=5.07Hz zeta=0.46 dom=[-11.929+29.342j -11.929-29.342j] GM=15.5dB PM=40.9deg P_max=190 sat_err=8.9deg
+m5: K=21.04Nm/rad B=0.618 J=0.0216 tau=5.2ms wn=4.97Hz zeta=0.46 dom=[-11.621+28.738j -11.621-28.738j] GM=15.3dB PM=40.8deg P_max=185 sat_err=9.1deg
+m6: K=21.15Nm/rad B=0.619 J=0.0216 tau=5.0ms wn=4.98Hz zeta=0.46 dom=[-11.768+28.812j -11.768-28.812j] GM=15.6dB PM=41.1deg P_max=192 sat_err=9.0deg
+
+# 2) P 계수 레지스터 / 부하 관성 / 명령 지연 바꿔 보기 (m1, m6)
+m1 P= 16: zeta=0.63 wn=3.02Hz maxRe=  -11.68 PM=  60.1
+m1 P= 32: zeta=0.44 wn=4.27Hz maxRe=  -11.49 PM=  45.7
+m1 P= 64: zeta=0.31 wn=6.04Hz maxRe=  -11.11 PM=  32.5
+m1 P=128: zeta=0.22 wn=8.54Hz maxRe=  -10.35 PM=  21.9
+m1 J_load=0.00: zeta=0.44 wn=4.27Hz maxRe=  -11.49 PM=  45.7 P_max=1013
+m1 J_load=0.01: zeta=0.38 wn=3.63Hz maxRe=   -8.31 PM=  39.7 P_max=1012
+m1 J_load=0.05: zeta=0.26 wn=2.50Hz maxRe=   -3.94 PM=  28.1 P_max=1010
+m1 J_load=0.20: zeta=0.15 wn=1.45Hz maxRe=   -1.33 PM=  16.6 P_max=1009
+m1 tau=1ms: P_max=1060
+m1 tau=5ms: P_max=215
+m1 tau=10ms: P_max=110
+m1 tau=20ms: P_max=57
+m6 P= 16: zeta=0.65 wn=3.52Hz maxRe=  -13.05 PM=  57.9
+m6 P= 32: zeta=0.46 wn=4.98Hz maxRe=  -11.77 PM=  41.1
+m6 P= 64: zeta=0.32 wn=7.05Hz maxRe=   -9.27 PM=  24.3
+m6 P=128: zeta=0.23 wn=9.97Hz maxRe=   -4.51 PM=   8.8
+m6 J_load=0.00: zeta=0.46 wn=4.98Hz maxRe=  -11.77 PM=  41.1 P_max=192
+m6 J_load=0.01: zeta=0.38 wn=4.12Hz maxRe=   -8.07 PM=  34.7 P_max=191
+m6 J_load=0.05: zeta=0.25 wn=2.74Hz maxRe=   -3.58 PM=  23.6 P_max=189
+m6 J_load=0.20: zeta=0.14 wn=1.56Hz maxRe=   -1.16 PM=  13.5 P_max=188
+m6 tau=1ms: P_max=941
+m6 tau=5ms: P_max=192
+m6 tau=10ms: P_max=98
+m6 tau=20ms: P_max=51
+
+# 3) 전체 체인 + 외부 루프 (loop_model.report 에 BAM wn, zeta, 명령 지연 반영)
+m1: servo poles=[-11.873+24.054j -11.873-24.054j] |z|max=0.888 BW=5.68Hz  outer Ki=5: GM=9.5dB PM=69.1deg |zcl|max=0.903 Ki_max=13.8/s
+m2: servo poles=[-11.994+24.025j -11.994-24.025j] |z|max=0.887 BW=5.67Hz  outer Ki=5: GM=9.6dB PM=69.0deg |zcl|max=0.902 Ki_max=13.8/s
+m3: servo poles=[-14.552+28.375j -14.552-28.375j] |z|max=0.865 BW=6.67Hz  outer Ki=5: GM=10.4dB PM=69.5deg |zcl|max=0.901 Ki_max=15.5/s
+m4: servo poles=[-14.585+28.346j -14.585-28.346j] |z|max=0.864 BW=6.66Hz  outer Ki=5: GM=10.4dB PM=69.5deg |zcl|max=0.901 Ki_max=15.5/s
+m5: servo poles=[-14.297+27.742j -14.297-27.742j] |z|max=0.867 BW=6.52Hz  outer Ki=5: GM=10.3dB PM=69.2deg |zcl|max=0.900 Ki_max=15.3/s
+m6: servo poles=[-14.349+27.838j -14.349-27.838j] |z|max=0.866 BW=6.54Hz  outer Ki=5: GM=10.3dB PM=69.3deg |zcl|max=0.900 Ki_max=15.4/s

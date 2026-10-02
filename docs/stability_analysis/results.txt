@@ -1,0 +1,39 @@
+TD_CMD=3.49 ms, TD_FB=28.00 ms
+servo_poles_s: [-21.9911+22.4355j -21.9911-22.4355j]
+servo_zeros_s: []
+chain_poles_z: [0.7825+0.1786j 0.7825-0.1786j 0.    +0.j    ]
+chain_zeros_z: [-0.8634+0.j]
+chain_delay_samples: 1
+bw_servo_hz: 5.044523872867376
+bw_chain_hz: 5.026261767577199
+servo_inner_PM_deg: 65.15639347496261
+loop_delay_ms: 31.490000000000006
+outer_Ki: 5.0
+outer_GM: 3.883243769981171
+outer_GM_dB: 11.78389308331181
+outer_PM_deg: 66.67673507904763
+outer_fc_hz: 0.7955272734890823
+outer_f180_hz: 2.935509058021288
+outer_cl_poles_z: [ 0.9114+0.0728j  0.9114-0.0728j  0.6348+0.j      0.3943+0.j
+ -0.0496+0.2104j -0.0496-0.2104j -0.1877+0.j    ]
+outer_cl_max_abs_z: 0.9142895166166425
+outer_loop_delay_samples: 4
+outer_Ki_max: 16.497587137582233
+
+# 민감도 (wn Hz, zeta) -> 서보 극점 실수부, 외부 Ki=5/s GM/PM, Ki_max
+wn= 2Hz zeta=0.3  Re(p)=   -3.77  |z|max=0.963  BW=2.91Hz  outer GM=  2.08dB PM=  56.3deg |zcl|max=0.993  Ki_max=6.2/s
+wn= 2Hz zeta=0.5  Re(p)=   -6.28  |z|max=0.939  BW=2.54Hz  outer GM=  5.23dB PM=  50.7deg |zcl|max=0.980  Ki_max=8.4/s
+wn= 2Hz zeta=0.7  Re(p)=   -8.80  |z|max=0.916  BW=2.02Hz  outer GM=  7.03dB PM=  46.5deg |zcl|max=0.978  Ki_max=10.1/s
+wn= 2Hz zeta=1.0  Re(p)=  -12.57  |z|max=0.882  BW=1.28Hz  outer GM=  8.70dB PM=  41.8deg |zcl|max=0.981  Ki_max=11.8/s
+wn= 5Hz zeta=0.3  Re(p)=   -9.42  |z|max=0.910  BW=7.25Hz  outer GM=  9.36dB PM=  73.6deg |zcl|max=0.920  Ki_max=14.1/s
+wn= 5Hz zeta=0.5  Re(p)=  -15.71  |z|max=0.855  BW=6.33Hz  outer GM= 10.94dB PM=  70.0deg |zcl|max=0.889  Ki_max=15.6/s
+wn= 5Hz zeta=0.7  Re(p)=  -21.99  |z|max=0.803  BW=5.03Hz  outer GM= 11.78dB PM=  66.7deg |zcl|max=0.914  Ki_max=16.5/s
+wn= 5Hz zeta=1.0  Re(p)=  -31.42  |z|max=0.730  BW=3.20Hz  outer GM= 12.51dB PM=  62.1deg |zcl|max=0.945  Ki_max=17.3/s
+wn=10Hz zeta=0.3  Re(p)=  -18.85  |z|max=0.828  BW=14.35Hz  outer GM= 14.27dB PM=  76.7deg |zcl|max=0.924  Ki_max=22.3/s
+wn=10Hz zeta=0.5  Re(p)=  -31.42  |z|max=0.730  BW=12.53Hz  outer GM= 14.42dB PM=  74.9deg |zcl|max=0.915  Ki_max=21.9/s
+wn=10Hz zeta=0.7  Re(p)=  -43.98  |z|max=0.644  BW=9.93Hz  outer GM= 14.50dB PM=  73.2deg |zcl|max=0.894  Ki_max=21.6/s
+wn=10Hz zeta=1.0  Re(p)=  -62.83  |z|max=0.533  BW=6.35Hz  outer GM= 14.58dB PM=  70.6deg |zcl|max=0.902  Ki_max=21.3/s
+wn=20Hz zeta=0.3  Re(p)=  -37.70  |z|max=0.686  BW=27.73Hz  outer GM= 16.94dB PM=  78.2deg |zcl|max=0.927  Ki_max=27.3/s
+wn=20Hz zeta=0.5  Re(p)=  -62.83  |z|max=0.533  BW=24.04Hz  outer GM= 16.62dB PM=  77.3deg |zcl|max=0.924  Ki_max=26.4/s
+wn=20Hz zeta=0.7  Re(p)=  -87.96  |z|max=0.415  BW=18.96Hz  outer GM= 16.38dB PM=  76.4deg |zcl|max=0.920  Ki_max=25.6/s
+wn=20Hz zeta=1.0  Re(p)= -125.66  |z|max=0.285  BW=12.29Hz  outer GM= 16.12dB PM=  75.0deg |zcl|max=0.912  Ki_max=24.7/s
